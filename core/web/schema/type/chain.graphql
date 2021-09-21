@@ -1,0 +1,8 @@
+type Chain {
+    id: ID!
+    enabled: Boolean!
+    createdAt: Time!
+    updatedAt: Time!
+}
+
+# Config    types.ChainCfg `json:"config"`

@@ -24,9 +24,13 @@ import (
 	"github.com/gin-gonic/contrib/sessions"
 	"github.com/gin-gonic/gin"
 	"github.com/gobuffalo/packr"
+	graphql "github.com/graph-gophers/graphql-go"
+	"github.com/graph-gophers/graphql-go/relay"
 	"github.com/smartcontractkit/chainlink/core/logger"
 	"github.com/smartcontractkit/chainlink/core/services/chainlink"
 	"github.com/smartcontractkit/chainlink/core/store/config"
+	"github.com/smartcontractkit/chainlink/core/web/resolver"
+	"github.com/smartcontractkit/chainlink/core/web/schema"
 	"github.com/ulule/limiter"
 	mgin "github.com/ulule/limiter/drivers/middleware/gin"
 	"github.com/ulule/limiter/drivers/store/memory"
@@ -95,7 +99,28 @@ func Router(app chainlink.Application, prometheus *ginprom.Prometheus) *gin.Engi
 
 	guiAssetRoutes(app.NewBox(), engine, config)
 
+	engine.POST("/query", graphqlHandler(app))
+
 	return engine
+}
+
+// Defining the Graphql handler
+func graphqlHandler(app chainlink.Application) gin.HandlerFunc {
+	rootSchema, err := schema.GetRootSchema()
+	if err != nil {
+		panic(err)
+	}
+
+	fmt.Println(rootSchema)
+	schema := graphql.MustParseSchema(rootSchema, &resolver.Resolver{
+		App: app,
+	})
+
+	h := relay.Handler{Schema: schema}
+
+	return func(c *gin.Context) {
+		h.ServeHTTP(c.Writer, c.Request)
+	}
 }
 
 func rateLimiter(period time.Duration, limit int64) gin.HandlerFunc {
