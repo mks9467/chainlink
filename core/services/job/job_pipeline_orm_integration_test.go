@@ -16,6 +16,7 @@ import (
 	"github.com/smartcontractkit/chainlink/core/logger"
 	"github.com/smartcontractkit/chainlink/core/services/job"
 	"github.com/smartcontractkit/chainlink/core/services/pipeline"
+	"github.com/smartcontractkit/chainlink/core/services/postgres"
 	"github.com/smartcontractkit/chainlink/core/store/models"
 )
 
@@ -107,7 +108,7 @@ func TestPipelineORM_Integration(t *testing.T) {
 		p, err := pipeline.Parse(DotStr)
 		require.NoError(t, err)
 
-		specID, err = orm.CreateSpec(context.Background(), db, *p, models.Interval(0))
+		specID, err = orm.CreateSpec(postgres.UnwrapGormDB(db), *p, models.Interval(0))
 		require.NoError(t, err)
 
 		var specs []pipeline.Spec
@@ -127,12 +128,12 @@ func TestPipelineORM_Integration(t *testing.T) {
 		cc := evmtest.NewChainSet(t, evmtest.TestChainOpts{Client: cltest.NewEthClientMockWithDefaultChain(t), DB: db, GeneralConfig: config})
 		runner := pipeline.NewRunner(orm, config, cc, nil, nil, lggr)
 		defer runner.Close()
-		jobORM := job.NewTestORM(t, db, cc, orm, keyStore)
+		jobORM := job.NewTestORM(t, postgres.UnwrapGormDB(db), cc, orm, keyStore)
 
 		dbSpec := makeVoterTurnoutOCRJobSpec(t, db, transmitterAddress)
 
 		// Need a job in order to create a run
-		_, err := jobORM.CreateJob(context.Background(), dbSpec, dbSpec.Pipeline)
+		err := jobORM.CreateJob(context.Background(), dbSpec)
 		require.NoError(t, err)
 
 		var pipelineSpecs []pipeline.Spec

@@ -13,6 +13,7 @@ import (
 
 func main() {
 	Run(NewProductionClient(), os.Args...)
+	// Spam()
 }
 
 // Run runs the CLI, providing further command instructions by default.
@@ -52,3 +53,30 @@ func NewProductionClient() *cmd.Client {
 		PasswordPrompter:               cmd.NewPasswordPrompter(),
 	}
 }
+
+// func Spam() {
+//     s := `
+// type                = "directrequest"
+// schemaVersion       = 1
+// name                = "example eth request event spec"
+// contractAddress     = "0x613a38AC1659769640aaE063C651F48E0250454C"
+// observationSource   = """
+//     decode_log   [type=ethabidecodelog
+//                  abi="OracleRequest(bytes32 indexed specId, address requester, bytes32 requestId, uint256 payment, address callbackAddr, bytes4 callbackFunctionId, uint256 cancelExpiration, uint256 dataVersion, bytes data)"
+//                  data="$(jobRun.logData)"
+//                  topics="$(jobRun.logTopics)"]
+//     encode_tx  [type=ethabiencode
+//                 abi="fulfill(bytes32 _requestId, uint256 _data)"
+//                 data=<{
+//                   "_requestId": $(decode_log.requestId),
+//                   "_data": $(parse)
+//                  }>
+//                ]
+//     fetch  [type=bridge name="test" requestData="{}"];
+//     parse  [type=jsonparse path="foo"]
+//     submit [type=ethtx to="$(decode_log.requester)" data="$(encode_tx)"]
+//     decode_log -> fetch -> parse -> encode_tx -> submit
+// """
+
+// `
+// }

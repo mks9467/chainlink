@@ -24,6 +24,7 @@ import (
 	log_mocks "github.com/smartcontractkit/chainlink/core/services/log/mocks"
 	"github.com/smartcontractkit/chainlink/core/services/pipeline"
 	pipeline_mocks "github.com/smartcontractkit/chainlink/core/services/pipeline/mocks"
+	"github.com/smartcontractkit/chainlink/core/services/postgres"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
@@ -77,25 +78,25 @@ func NewDirectRequestUniverseWithConfig(t *testing.T, cfg *configtest.TestGenera
 	orm := pipeline.NewORM(db)
 
 	keyStore := cltest.NewKeyStore(t, db)
-	jobORM := job.NewORM(db, cc, orm, keyStore, logger.TestLogger(t))
+	jobORM := job.NewORM(postgres.UnwrapGormDB(db), cc, orm, keyStore, logger.TestLogger(t))
 
 	lggr := logger.TestLogger(t)
 	delegate := directrequest.NewDelegate(lggr, runner, orm, db, cc)
 
-	spec := cltest.MakeDirectRequestJobSpec(t)
-	spec.ExternalJobID = uuid.NewV4()
+	jb := cltest.MakeDirectRequestJobSpec(t)
+	jb.ExternalJobID = uuid.NewV4()
 	if specF != nil {
-		specF(spec)
+		specF(jb)
 	}
-	jb, err := jobORM.CreateJob(context.Background(), spec, spec.Pipeline)
+	err := jobORM.CreateJob(context.Background(), jb)
 	require.NoError(t, err)
-	serviceArray, err := delegate.ServicesForSpec(jb)
+	serviceArray, err := delegate.ServicesForSpec(*jb)
 	require.NoError(t, err)
 	assert.Len(t, serviceArray, 1)
 	service := serviceArray[0]
 
 	uni := &DirectRequestUniverse{
-		spec:           spec,
+		spec:           jb,
 		runner:         runner,
 		service:        service,
 		jobORM:         jobORM,

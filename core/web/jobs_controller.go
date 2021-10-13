@@ -1,7 +1,11 @@
 package web
 
 import (
+	"context"
+	"fmt"
+	"math/rand"
 	"net/http"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/pkg/errors"
@@ -34,7 +38,7 @@ func (jc *JobsController) Index(c *gin.Context, size, page, offset int) {
 		size = 1000
 	}
 
-	jobs, count, err := jc.App.JobORM().JobsV2(offset, size)
+	jobs, count, err := jc.App.JobORM().FindJobs(offset, size)
 	if err != nil {
 		jsonAPIError(c, http.StatusInternalServerError, err)
 		return
@@ -85,17 +89,21 @@ type CreateJobRequest struct {
 // Example:
 // "POST <application>/jobs"
 func (jc *JobsController) Create(c *gin.Context) {
+	tmp := rand.Int31()
+	fmt.Println("BALLS A", tmp)
 	request := CreateJobRequest{}
 	if err := c.ShouldBindJSON(&request); err != nil {
 		jsonAPIError(c, http.StatusUnprocessableEntity, err)
 		return
 	}
+	fmt.Println("BALLS 1", tmp)
 
 	jobType, err := job.ValidateSpec(request.TOML)
 	if err != nil {
 		jsonAPIError(c, http.StatusUnprocessableEntity, errors.Wrap(err, "failed to parse TOML"))
 		return
 	}
+	fmt.Println("BALLS 2", tmp)
 
 	var jb job.Job
 	config := jc.App.GetConfig()
@@ -127,7 +135,9 @@ func (jc *JobsController) Create(c *gin.Context) {
 		return
 	}
 
-	jb, err = jc.App.AddJobV2(c.Request.Context(), jb, jb.Name)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
+	defer cancel()
+	err = jc.App.AddJobV2(ctx, &jb)
 	if err != nil {
 		if errors.Cause(err) == job.ErrNoSuchKeyBundle || errors.Cause(err) == job.ErrNoSuchPeerID || errors.Cause(err) == job.ErrNoSuchTransmitterAddress {
 			jsonAPIError(c, http.StatusBadRequest, err)

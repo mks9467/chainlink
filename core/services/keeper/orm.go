@@ -137,5 +137,5 @@ func (korm ORM) SetLastRunHeightForUpkeepOnJob(ctx context.Context, jobID int32,
 }
 
 func (korm ORM) getDB(ctx context.Context) *gorm.DB {
-	return postgres.TxFromContext(ctx, korm.DB).WithContext(ctx)
+	return postgres.GormTxFromContext(ctx, korm.DB).WithContext(ctx)
 }

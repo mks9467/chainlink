@@ -497,9 +497,6 @@ answer1 [type=median index=0];
 			FeedsManagerID: 2,
 			Spec:           spec,
 		}
-		jb = job.Job{
-			ID: int32(1),
-		}
 	)
 
 	testCases := []struct {
@@ -520,12 +517,12 @@ answer1 [type=median index=0];
 				svc.spawner.
 					On("CreateJob",
 						ctx,
-						mock.MatchedBy(func(j job.Job) bool {
-							return true
+						mock.MatchedBy(func(j *job.Job) bool {
+							return j.Name.String == "LINK / ETH | version 3 | contract 0x0000000000000000000000000000000000000000"
 						}),
-						null.StringFrom("LINK / ETH | version 3 | contract 0x0000000000000000000000000000000000000000"),
 					).
-					Return(jb, nil)
+					Run(func(args mock.Arguments) { (args.Get(1).(*job.Job)).ID = 1 }).
+					Return(nil)
 				svc.orm.On("ApproveJobProposal",
 					mock.MatchedBy(func(ctx context.Context) bool { return true }),
 					pendingProposal.ID,
@@ -552,12 +549,12 @@ answer1 [type=median index=0];
 				svc.spawner.
 					On("CreateJob",
 						ctx,
-						mock.MatchedBy(func(j job.Job) bool {
-							return true
+						mock.MatchedBy(func(j *job.Job) bool {
+							return j.Name.String == "LINK / ETH | version 3 | contract 0x0000000000000000000000000000000000000000"
 						}),
-						null.StringFrom("LINK / ETH | version 3 | contract 0x0000000000000000000000000000000000000000"),
 					).
-					Return(jb, nil)
+					Run(func(args mock.Arguments) { (args.Get(1).(*job.Job)).ID = 1 }).
+					Return(nil)
 				svc.orm.On("ApproveJobProposal",
 					mock.MatchedBy(func(ctx context.Context) bool { return true }),
 					cancelledProposal.ID,
@@ -617,12 +614,11 @@ answer1 [type=median index=0];
 				svc.spawner.
 					On("CreateJob",
 						ctx,
-						mock.MatchedBy(func(j job.Job) bool {
-							return true
+						mock.MatchedBy(func(j *job.Job) bool {
+							return j.Name.String == "LINK / ETH | version 3 | contract 0x0000000000000000000000000000000000000000"
 						}),
-						null.StringFrom("LINK / ETH | version 3 | contract 0x0000000000000000000000000000000000000000"),
 					).
-					Return(job.Job{}, errors.New("could not save"))
+					Return(errors.New("could not save"))
 			},
 			wantErr: "could not approve job proposal: could not save",
 		},

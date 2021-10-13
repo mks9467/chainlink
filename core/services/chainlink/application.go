@@ -20,7 +20,6 @@ import (
 	"github.com/smartcontractkit/sqlx"
 	"go.uber.org/multierr"
 	"go.uber.org/zap/zapcore"
-	"gopkg.in/guregu/null.v4"
 	"gorm.io/gorm"
 
 	"github.com/smartcontractkit/chainlink/core/bridges"
@@ -61,6 +60,7 @@ type Application interface {
 	GetLogger() logger.Logger
 	GetHealthChecker() health.Checker
 	GetDB() *gorm.DB
+	GetSqlxDB() *sqlx.DB
 	GetConfig() config.GeneralConfig
 	SetLogLevel(ctx context.Context, lvl zapcore.Level) error
 	GetKeyStore() keystore.Master
@@ -80,7 +80,7 @@ type Application interface {
 	BridgeORM() bridges.ORM
 	SessionORM() sessions.ORM
 	BPTXMORM() bulletprooftxmanager.ORM
-	AddJobV2(ctx context.Context, job job.Job, name null.String) (job.Job, error)
+	AddJobV2(ctx context.Context, job *job.Job) error
 	DeleteJob(ctx context.Context, jobID int32) error
 	RunWebhookJobV2(ctx context.Context, jobUUID uuid.UUID, requestBody string, meta pipeline.JSONSerializable) (int64, error)
 	ResumeJobV2(ctx context.Context, taskID uuid.UUID, result pipeline.Result) error
@@ -152,6 +152,7 @@ func NewApplication(opts ApplicationOpts) (Application, error) {
 	var subservices []service.Service
 	db := opts.GormDB
 	gormTxm := postgres.NewGormTransactionManager(db)
+	sqlxTxm := postgres.NewSqlxTransactionManager(opts.SqlxDB)
 	cfg := opts.Config
 	shutdownSignal := opts.ShutdownSignal
 	keyStore := opts.KeyStore
@@ -196,7 +197,7 @@ func NewApplication(opts ApplicationOpts) (Application, error) {
 		bridgeORM      = bridges.NewORM(opts.SqlxDB)
 		sessionORM     = sessions.NewORM(opts.SqlxDB, cfg.SessionTimeout().Duration())
 		pipelineRunner = pipeline.NewRunner(pipelineORM, cfg, chainSet, keyStore.Eth(), keyStore.VRF(), globalLogger)
-		jobORM         = job.NewORM(db, chainSet, pipelineORM, keyStore, globalLogger)
+		jobORM         = job.NewORM(ops.SqlxDB, chainSet, pipelineORM, keyStore, globalLogger)
 		bptxmORM       = bulletprooftxmanager.NewORM(opts.SqlxDB)
 	)
 
@@ -281,7 +282,7 @@ func NewApplication(opts ApplicationOpts) (Application, error) {
 	if err != nil {
 		globalLogger.Warnw("Unable to load feeds service; no default chain available", "err", err)
 	} else {
-		feedsService = feeds.NewService(feedsORM, jobORM, gormTxm, jobSpawner, keyStore.CSA(), keyStore.Eth(), chain.Config(), chainSet, globalLogger, opts.Version)
+		feedsService = feeds.NewService(feedsORM, jobORM, sqlxTxm, jobSpawner, keyStore.CSA(), keyStore.Eth(), chain.Config(), chainSet, globalLogger, opts.Version)
 	}
 
 	app := &ChainlinkApplication{
@@ -523,8 +524,9 @@ func (app *ChainlinkApplication) WakeSessionReaper() {
 	app.SessionReaper.WakeUp()
 }
 
-func (app *ChainlinkApplication) AddJobV2(ctx context.Context, j job.Job, name null.String) (job.Job, error) {
-	return app.jobSpawner.CreateJob(ctx, j, name)
+// TODO: Caller must assign name
+func (app *ChainlinkApplication) AddJobV2(ctx context.Context, j *job.Job) error {
+	return app.jobSpawner.CreateJob(ctx, j)
 }
 
 func (app *ChainlinkApplication) DeleteJob(ctx context.Context, jobID int32) error {
@@ -651,6 +653,10 @@ func (app *ChainlinkApplication) GetEventBroadcaster() postgres.EventBroadcaster
 
 func (app *ChainlinkApplication) GetDB() *gorm.DB {
 	return app.gormDB
+}
+
+func (app *ChainlinkApplication) GetSqlxDB() *sqlx.DB {
+	return app.sqlxDB
 }
 
 // Returns the configuration to use for creating and authenticating

@@ -16,6 +16,11 @@ import (
 type Queryer interface {
 	sqlx.Ext
 	sqlx.ExtContext
+	sqlx.Preparer
+	sqlx.PreparerContext
+	sqlx.Queryer
+	Select(dest interface{}, query string, args ...interface{}) error
+	PrepareNamed(query string) (*sqlx.NamedStmt, error)
 	QueryRow(query string, args ...interface{}) *sql.Row
 }
 
@@ -99,4 +104,46 @@ func SqlxTransaction(ctx context.Context, q Queryer, fc func(tx *sqlx.Tx) error,
 	}
 
 	return
+}
+
+func PrepareGet(q Queryer, sql string, dest interface{}, arg interface{}) error {
+	stmt, err := q.PrepareNamed(sql)
+	if err != nil {
+		return errors.Wrap(err, "error preparing named statement")
+	}
+	return errors.Wrap(stmt.Get(dest, arg), "error in get query")
+}
+
+func PrepareQueryRowx(q Queryer, sql string, dest interface{}, arg interface{}) error {
+	stmt, err := q.PrepareNamed(sql)
+	if err != nil {
+		return errors.Wrap(err, "error preparing named statement")
+	}
+	return errors.Wrap(stmt.QueryRowx(arg).Scan(dest), "error querying row")
+}
+
+type Q struct {
+	Queryer
+	Ctx                    context.Context
+	DisableDefaultDeadline bool
+}
+
+func (q *Q) Context() (context.Context, context.CancelFunc) {
+	if q.DisableDefaultDeadline && q.Ctx == nil {
+		return context.Background(), func() {}
+	} else if !q.DisableDefaultDeadline && q.Ctx == nil {
+		return DefaultQueryCtx()
+	} else if q.DisableDefaultDeadline {
+		return q.Ctx, func() {}
+	} else {
+		return DefaultQueryCtxWithParent(q.Ctx)
+	}
+
+}
+
+func GetQ(qs []Q, queryer Queryer) Q {
+	if len(qs) == 0 {
+		return Q{Queryer: queryer}
+	}
+	return qs[0]
 }

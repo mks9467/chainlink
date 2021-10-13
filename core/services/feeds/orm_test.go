@@ -19,6 +19,7 @@ import (
 	"github.com/smartcontractkit/chainlink/core/services/job"
 	"github.com/smartcontractkit/chainlink/core/services/offchainreporting"
 	"github.com/smartcontractkit/chainlink/core/services/pipeline"
+	"github.com/smartcontractkit/chainlink/core/services/postgres"
 	"github.com/smartcontractkit/chainlink/core/testdata/testspecs"
 	"github.com/smartcontractkit/chainlink/core/utils/crypto"
 )
@@ -542,7 +543,7 @@ func createJob(t *testing.T, db *gorm.DB, externalJobID uuid.UUID) *job.Job {
 
 	pipelineORM := pipeline.NewORM(db)
 	cc := evmtest.NewChainSet(t, evmtest.TestChainOpts{DB: db, GeneralConfig: config})
-	orm := job.NewORM(db, cc, pipelineORM, keyStore, logger.TestLogger(t))
+	orm := job.NewORM(postgres.UnwrapGormDB(db), cc, pipelineORM, keyStore, logger.TestLogger(t))
 	defer orm.Close()
 
 	_, bridge := cltest.NewBridgeType(t, "voter_turnout", "http://blah.com")
@@ -559,8 +560,8 @@ func createJob(t *testing.T, db *gorm.DB, externalJobID uuid.UUID) *job.Job {
 	)
 	require.NoError(t, err)
 
-	j, err := orm.CreateJob(context.Background(), &jb, jb.Pipeline)
+	err = orm.CreateJob(context.Background(), &jb)
 	require.NoError(t, err)
 
-	return &j
+	return &jb
 }

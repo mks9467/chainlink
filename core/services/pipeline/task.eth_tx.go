@@ -15,6 +15,7 @@ import (
 	"github.com/smartcontractkit/chainlink/core/logger"
 	"github.com/smartcontractkit/chainlink/core/null"
 	"github.com/smartcontractkit/chainlink/core/services/bulletprooftxmanager"
+	"github.com/smartcontractkit/chainlink/core/services/postgres"
 )
 
 //
@@ -32,7 +33,7 @@ type ETHTxTask struct {
 	EVMChainID       string `json:"evmChainID" mapstructure:"evmChainID"`
 	Simulate         string `json:"simulate" mapstructure:"simulate"`
 
-	db       *gorm.DB
+	db       postgres.Queryer
 	keyStore ETHKeyStore
 	chainSet evm.ChainSet
 }

@@ -21,6 +21,7 @@ import (
 	"github.com/smartcontractkit/chainlink/core/services/postgres"
 	"github.com/smartcontractkit/chainlink/core/store/models"
 	"github.com/smartcontractkit/chainlink/core/utils"
+	"github.com/smartcontractkit/sqlx"
 )
 
 //go:generate mockery --name Runner --output ./mocks/ --case=underscore
@@ -444,14 +445,16 @@ func (r *runner) ExecuteAndInsertFinishedRun(ctx context.Context, spec Spec, var
 		return 0, finalResult, nil
 	}
 
-	if runID, err = r.orm.InsertFinishedRun(postgres.UnwrapGormDB(r.orm.DB()), run, saveSuccessfulTaskRuns); err != nil {
+	if runID, err = r.orm.InsertFinishedRun(r.orm.DB(), run, saveSuccessfulTaskRuns); err != nil {
 		return runID, finalResult, errors.Wrapf(err, "error inserting finished results for spec ID %v", spec.ID)
 	}
 	return runID, finalResult, nil
 
 }
 
-func (r *runner) Run(ctx context.Context, run *Run, l logger.Logger, saveSuccessfulTaskRuns bool, fn func(tx *gorm.DB) error) (incomplete bool, err error) {
+// TODO: Pass in the db/ctx explicitly
+func (r *runner) Run(ctx context.Context, run *Run, l logger.Logger, saveSuccessfulTaskRuns bool, fn func(tx *sqlx.Tx) error) (incomplete bool, err error) {
+	postgres.EnsureNoTxInContext(ctx)
 	pipeline, err := r.initializePipeline(run)
 	if err != nil {
 		return false, err
@@ -462,9 +465,8 @@ func (r *runner) Run(ctx context.Context, run *Run, l logger.Logger, saveSuccess
 	queryCtx, cancel := postgres.DefaultQueryCtxWithParent(ctx)
 	defer cancel()
 
-	err = postgres.NewGormTransactionManager(r.orm.DB()).TransactWithContext(queryCtx, func(ctx context.Context) error {
-		tx := postgres.TxFromContext(ctx, r.orm.DB())
-
+	// TODO: Fix this
+	err = postgres.SqlxTransaction(queryCtx, r.orm.DB(), func(tx *sqlx.Tx) error {
 		// OPTIMISATION: avoid an extra db write if there is no async tasks present or if this is a resumed run
 		if preinsert && run.ID == 0 {
 			now := time.Now()
@@ -483,7 +485,7 @@ func (r *runner) Run(ctx context.Context, run *Run, l logger.Logger, saveSuccess
 				default:
 				}
 			}
-			if err = r.orm.CreateRun(postgres.UnwrapGorm(tx), run); err != nil {
+			if err = r.orm.CreateRun(tx, run); err != nil {
 				return err
 			}
 		}

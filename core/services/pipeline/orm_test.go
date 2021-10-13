@@ -1,7 +1,6 @@
 package pipeline_test
 
 import (
-	"context"
 	"testing"
 	"time"
 
@@ -28,7 +27,7 @@ func Test_PipelineORM_CreateSpec(t *testing.T) {
 		Source: source,
 	}
 
-	id, err := orm.CreateSpec(context.Background(), db, p, maxTaskDuration)
+	id, err := orm.CreateSpec(postgres.UnwrapGormDB(db), p, maxTaskDuration)
 	require.NoError(t, err)
 
 	actual := pipeline.Spec{}
@@ -92,7 +91,7 @@ answer2 [type=bridge name=election_winner index=1];
 	require.NotNil(t, p)
 
 	maxTaskDuration := models.Interval(1 * time.Minute)
-	specID, err := orm.CreateSpec(context.Background(), db, *p, maxTaskDuration)
+	specID, err := orm.CreateSpec(postgres.UnwrapGormDB(db), *p, maxTaskDuration)
 	require.NoError(t, err)
 
 	run := &pipeline.Run{

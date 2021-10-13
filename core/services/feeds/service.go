@@ -356,9 +356,10 @@ func (s *service) ApproveJobProposal(ctx context.Context, id int64) error {
 		return errors.Wrap(err, "could not generate job from spec")
 	}
 
+	// TODO: gonna need to sqlx-ify this
 	err = s.txm.TransactWithContext(ctx, func(ctx context.Context) error {
 		// Create the job
-		_, err = s.jobSpawner.CreateJob(ctx, *j, j.Name)
+		err := s.jobSpawner.CreateJob(ctx, j)
 		if err != nil {
 			return err
 		}

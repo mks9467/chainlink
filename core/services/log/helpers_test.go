@@ -217,14 +217,14 @@ type simpleLogListener struct {
 func (helper *broadcasterHelper) newLogListenerWithJob(name string) *simpleLogListener {
 	t := helper.t
 	db := helper.db
-	job := &job.Job{
+	jb := &job.Job{
 		Type:          job.Cron,
 		SchemaVersion: 1,
 		CronSpec:      &job.CronSpec{CronSchedule: "@every 1s"},
 		PipelineSpec:  &pipeline.Spec{},
 		ExternalJobID: uuid.NewV4(),
 	}
-	_, err := helper.pipelineHelper.Jrm.CreateJob(context.Background(), job, job.Pipeline)
+	err := helper.pipelineHelper.Jrm.CreateJob(context.Background(), jb)
 	require.NoError(t, err)
 
 	var rec received
@@ -233,7 +233,7 @@ func (helper *broadcasterHelper) newLogListenerWithJob(name string) *simpleLogLi
 		name:     name,
 		received: &rec,
 		t:        t,
-		jobID:    job.ID,
+		jobID:    jb.ID,
 	}
 }
 

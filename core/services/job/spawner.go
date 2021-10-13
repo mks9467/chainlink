@@ -7,7 +7,6 @@ import (
 	"sync"
 
 	"github.com/pkg/errors"
-	"gopkg.in/guregu/null.v4"
 
 	"github.com/smartcontractkit/chainlink/core/logger"
 	"github.com/smartcontractkit/chainlink/core/service"
@@ -24,7 +23,7 @@ type (
 	// has 1 or more of these services associated with it.
 	Spawner interface {
 		service.Service
-		CreateJob(ctx context.Context, spec Job, name null.String) (Job, error)
+		CreateJob(ctx context.Context, jb *Job) error
 		DeleteJob(ctx context.Context, jobID int32) error
 		ActiveJobs() map[int32]Job
 
@@ -97,7 +96,7 @@ func (js *spawner) Close() error {
 
 func (js *spawner) startAllServices() {
 	// TODO: rename to find AllJobs
-	specs, _, err := js.orm.JobsV2(0, math.MaxUint32)
+	specs, _, err := js.orm.FindJobs(0, math.MaxUint32)
 	if err != nil {
 		logger.Errorf("Couldn't fetch unclaimed jobs: %v", err)
 		return
@@ -176,26 +175,23 @@ func (js *spawner) StartService(spec Job) error {
 }
 
 // Should not get called before Start()
-func (js *spawner) CreateJob(ctx context.Context, spec Job, name null.String) (Job, error) {
-	var jb Job
-	var err error
-	delegate, exists := js.jobTypeDelegates[spec.Type]
+func (js *spawner) CreateJob(ctx context.Context, jb *Job) error {
+	delegate, exists := js.jobTypeDelegates[jb.Type]
 	if !exists {
-		logger.Errorf("job type '%s' has not been registered with the job.Spawner", spec.Type)
-		return jb, errors.Errorf("job type '%s' has not been registered with the job.Spawner", spec.Type)
+		logger.Errorf("job type '%s' has not been registered with the job.Spawner", jb.Type)
+		return errors.Errorf("job type '%s' has not been registered with the job.Spawner", jb.Type)
 	}
 
 	ctx, cancel := utils.CombinedContext(js.chStop, ctx)
 	defer cancel()
 
-	spec.Name = name
-
 	ctx, cancel = context.WithTimeout(ctx, postgres.DefaultQueryTimeout)
 	defer cancel()
-	err = js.txm.TransactWithContext(ctx, func(context.Context) error {
-		jb, err = js.orm.CreateJob(ctx, &spec, spec.Pipeline)
+	// TODO: Resolve this context/transaction situation and check for more
+	err := js.txm.TransactWithContext(ctx, func(context.Context) error {
+		err := js.orm.CreateJob(ctx, jb)
 		if err != nil {
-			logger.Errorw("Error creating job", "type", spec.Type, "error", err)
+			logger.Errorw("Error creating job", "type", jb.Type, "error", err)
 
 			return err
 		}
@@ -203,17 +199,17 @@ func (js *spawner) CreateJob(ctx context.Context, spec Job, name null.String) (J
 		return nil
 	})
 	if err != nil {
-		return jb, err
+		return err
 	}
 
-	if err = js.StartService(jb); err != nil {
-		return jb, err
+	if err = js.StartService(*jb); err != nil {
+		return err
 	}
 
-	delegate.AfterJobCreated(jb)
+	delegate.AfterJobCreated(*jb)
 
 	logger.Infow("Created job", "type", jb.Type, "jobID", jb.ID)
-	return jb, err
+	return err
 }
 
 // Should not get called before Start()
@@ -243,9 +239,9 @@ func (js *spawner) DeleteJob(ctx context.Context, jobID int32) error {
 
 	// Inject the wrapping transaction into the combined context if it exists.
 	// This allows rollbacks from other services.
-	tx := postgres.GetTxFromContext(ctx)
+	tx := postgres.GetSqlxTxFromContext(ctx)
 	if tx != nil {
-		combctx = postgres.InjectTxIntoContext(combctx, tx)
+		combctx = postgres.InjectSqlxTxIntoContext(combctx, tx)
 	}
 
 	err := js.orm.DeleteJob(combctx, jobID)

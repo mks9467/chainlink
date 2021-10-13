@@ -112,7 +112,7 @@ WHERE id = ?;
 }
 
 func (o *orm) UpdateManager(ctx context.Context, mgr FeedsManager) error {
-	tx := postgres.TxFromContext(ctx, o.db)
+	tx := postgres.GormTxFromContext(ctx, o.db)
 	now := time.Now()
 
 	stmt := `
@@ -265,7 +265,7 @@ func (o *orm) getJobProposal(ctx context.Context, stmt string, values ...interfa
 
 // UpdateJobProposalStatus updates the status of a job proposal by id.
 func (o *orm) UpdateJobProposalStatus(ctx context.Context, id int64, status JobProposalStatus) error {
-	tx := postgres.TxFromContext(ctx, o.db)
+	tx := postgres.GormTxFromContext(ctx, o.db)
 
 	now := time.Now()
 
@@ -289,7 +289,7 @@ WHERE id = ?;
 
 // UpdateJobProposalSpec updates the spec of a job proposal by id.
 func (o *orm) UpdateJobProposalSpec(ctx context.Context, id int64, spec string) error {
-	tx := postgres.TxFromContext(ctx, o.db)
+	tx := postgres.GormTxFromContext(ctx, o.db)
 	now := time.Now()
 
 	stmt := `
@@ -312,7 +312,7 @@ WHERE id = ?;
 
 // ApproveJobProposal updates the job proposal as approved.
 func (o *orm) ApproveJobProposal(ctx context.Context, id int64, externalJobID uuid.UUID, status JobProposalStatus) error {
-	tx := postgres.TxFromContext(ctx, o.db)
+	tx := postgres.GormTxFromContext(ctx, o.db)
 	now := time.Now()
 
 	stmt := `
@@ -336,7 +336,7 @@ WHERE id = ?;
 
 // CancelJobProposal cancels a job proposal.
 func (o *orm) CancelJobProposal(ctx context.Context, id int64) error {
-	tx := postgres.TxFromContext(ctx, o.db)
+	tx := postgres.GormTxFromContext(ctx, o.db)
 	now := time.Now()
 	stmt := `
 UPDATE job_proposals

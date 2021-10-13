@@ -92,14 +92,14 @@ func TestORM_UpdateFluxMonitorRoundStats(t *testing.T) {
 	cc := evmtest.NewChainSet(t, evmtest.TestChainOpts{GeneralConfig: cfg, DB: db})
 	// Instantiate a real job ORM because we need to create a job to satisfy
 	// a check in pipeline.CreateRun
-	jobORM := job.NewORM(db, cc, pipelineORM, keyStore, logger.TestLogger(t))
+	jobORM := job.NewORM(postgres.UnwrapGormDB(db), cc, pipelineORM, keyStore, logger.TestLogger(t))
 	orm := fluxmonitorv2.NewORM(db, nil, nil)
 
 	address := cltest.NewAddress()
 	var roundID uint32 = 1
 
-	j := makeJob(t)
-	jb, err := jobORM.CreateJob(context.Background(), j, pipeline.Pipeline{})
+	jb := makeJob(t)
+	err := jobORM.CreateJob(context.Background(), jb)
 	require.NoError(t, err)
 
 	for expectedCount := uint64(1); expectedCount < 4; expectedCount++ {

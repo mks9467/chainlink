@@ -20,7 +20,7 @@ var (
 //go:generate mockery --name ORM --output ./mocks/ --case=underscore
 
 type ORM interface {
-	CreateSpec(ctx context.Context, tx *gorm.DB, pipeline Pipeline, maxTaskTimeout models.Interval) (int32, error)
+	CreateSpec(pipeline Pipeline, maxTaskTimeout models.Interval, qs ...postgres.Q) (int32, error)
 	CreateRun(db postgres.Queryer, run *Run) (err error)
 	DeleteRun(id int64) error
 	StoreRun(db postgres.Queryer, run *Run) (restart bool, err error)
@@ -30,40 +30,37 @@ type ORM interface {
 	FindRun(id int64) (Run, error)
 	GetAllRuns() ([]Run, error)
 	GetUnfinishedRuns(context.Context, time.Time, func(run Run) error) error
-	DB() *gorm.DB
+	DB() *sqlx.DB
 }
 
 type orm struct {
-	db *gorm.DB
+	// TODO: Remove this DB entirely and pass it in with all functions
+	db *sqlx.DB
 }
 
 var _ ORM = (*orm)(nil)
 
-func NewORM(db *gorm.DB) *orm {
+func NewORM(db *sqlx.DB) *orm {
 	return &orm{db}
 }
 
-// The tx argument must be an already started transaction.
-func (o *orm) CreateSpec(ctx context.Context, tx *gorm.DB, pipeline Pipeline, maxTaskDuration models.Interval) (int32, error) {
-	spec := Spec{
-		DotDagSource:    pipeline.Source,
-		MaxTaskDuration: maxTaskDuration,
-	}
-	err := tx.Create(&spec).Error
-	if err != nil {
-		return 0, err
-	}
-	return spec.ID, errors.WithStack(err)
+func (o *orm) CreateSpec(pipeline Pipeline, maxTaskDuration models.Interval, qs ...postgres.Q) (id int32, err error) {
+	q := postgres.GetQ(qs, o.db)
+	sql := `INSERT INTO pipeline_specs (dot_dag_source, max_task_duration, created_at)
+	VALUES ($1, $2, NOW())
+	RETURNING id;`
+	err = q.QueryRowxContext(q.Context(), sql, pipeline.Source, maxTaskDuration).Scan(&id)
+	return id, errors.WithStack(err)
 }
 
-func (o *orm) CreateRun(db postgres.Queryer, run *Run) (err error) {
+func (o *orm) CreateRun(q postgres.Queryer, run *Run) (err error) {
 	if run.CreatedAt.IsZero() {
 		return errors.New("run.CreatedAt must be set")
 	}
 
 	ctx, cancel := postgres.DefaultQueryCtx()
 	defer cancel()
-	err = postgres.SqlxTransaction(ctx, db, func(tx *sqlx.Tx) error {
+	err = postgres.SqlxTransaction(ctx, q, func(tx *sqlx.Tx) error {
 		sql := `INSERT INTO pipeline_runs (pipeline_spec_id, meta, inputs, created_at, state)
 		VALUES (:pipeline_spec_id, :meta, :inputs, :created_at, :state)
 		RETURNING id`
@@ -98,59 +95,60 @@ func (o *orm) CreateRun(db postgres.Queryer, run *Run) (err error) {
 
 // StoreRun will persist a partially executed run before suspending, or finish a run.
 // If `restart` is true, then new task run data is available and the run should be resumed immediately.
-func (o *orm) StoreRun(tx postgres.Queryer, run *Run) (restart bool, err error) {
-	finished := run.FinishedAt.Valid
-	if !finished {
-		// Lock the current run. This prevents races with /v2/resume
-		sql := `SELECT id FROM pipeline_runs WHERE id = $1 FOR UPDATE;`
-		if _, err = tx.Exec(sql, run.ID); err != nil {
-			return restart, errors.Wrap(err, "StoreRun")
-		}
-
-		taskRuns := []TaskRun{}
-		// Reload task runs, we want to check for any changes while the run was ongoing
-		if err = sqlx.Select(tx, &taskRuns, `SELECT * FROM pipeline_task_runs WHERE pipeline_run_id = $1`, run.ID); err != nil {
-			return restart, errors.Wrap(err, "StoreRun")
-		}
-
-		// Construct a temporary run so we can use r.ByDotID
-		tempRun := Run{PipelineTaskRuns: taskRuns}
-
-		// Diff with current state, if updated, swap run.PipelineTaskRuns and early return with restart = true
-		for i, tr := range run.PipelineTaskRuns {
-			if !tr.IsPending() {
-				continue
+func (o *orm) StoreRun(q postgres.Queryer, run *Run) (restart bool, err error) {
+	err = postgres.SqlxTransactionWithDefaultCtx(q, func(tx *sqlx.Tx) error {
+		finished := run.FinishedAt.Valid
+		if !finished {
+			// Lock the current run. This prevents races with /v2/resume
+			sql := `SELECT id FROM pipeline_runs WHERE id = $1 FOR UPDATE;`
+			if _, err = tx.Exec(sql, run.ID); err != nil {
+				return errors.Wrap(err, "StoreRun")
 			}
 
-			// Look for new data
-			if taskRun := tempRun.ByDotID(tr.DotID); taskRun != nil && !taskRun.IsPending() {
-				// Swap in the latest state
-				run.PipelineTaskRuns[i] = *taskRun
-				restart = true
+			taskRuns := []TaskRun{}
+			// Reload task runs, we want to check for any changes while the run was ongoing
+			if err = sqlx.Select(tx, &taskRuns, `SELECT * FROM pipeline_task_runs WHERE pipeline_run_id = $1`, run.ID); err != nil {
+				return errors.Wrap(err, "StoreRun")
+			}
+
+			// Construct a temporary run so we can use r.ByDotID
+			tempRun := Run{PipelineTaskRuns: taskRuns}
+
+			// Diff with current state, if updated, swap run.PipelineTaskRuns and early return with restart = true
+			for i, tr := range run.PipelineTaskRuns {
+				if !tr.IsPending() {
+					continue
+				}
+
+				// Look for new data
+				if taskRun := tempRun.ByDotID(tr.DotID); taskRun != nil && !taskRun.IsPending() {
+					// Swap in the latest state
+					run.PipelineTaskRuns[i] = *taskRun
+					restart = true
+				}
+			}
+
+			if restart {
+				return nil
+			}
+
+			// Suspend the run
+			run.State = RunStatusSuspended
+			if _, err = sqlx.NamedExec(tx, `UPDATE pipeline_runs SET state = :state WHERE id = :id`, run); err != nil {
+				return errors.Wrap(err, "StoreRun")
+			}
+		} else {
+			// Simply finish the run, no need to do any sort of locking
+			if run.Outputs.Val == nil || len(run.FatalErrors) == 0 {
+				return errors.Errorf("run must have both Outputs and Errors, got Outputs: %#v, Errors: %#v", run.Outputs.Val, run.FatalErrors)
+			}
+			sql := `UPDATE pipeline_runs SET state = :state, finished_at = :finished_at, all_errors= :all_errors, fatal_errors= :fatal_errors, outputs = :outputs WHERE id = :id`
+			if _, err = sqlx.NamedExec(tx, sql, run); err != nil {
+				return errors.Wrap(err, "StoreRun")
 			}
 		}
 
-		if restart {
-			return restart, nil
-		}
-
-		// Suspend the run
-		run.State = RunStatusSuspended
-		if _, err = sqlx.NamedExec(tx, `UPDATE pipeline_runs SET state = :state WHERE id = :id`, run); err != nil {
-			return false, errors.Wrap(err, "StoreRun")
-		}
-	} else {
-		// Simply finish the run, no need to do any sort of locking
-		if run.Outputs.Val == nil || len(run.FatalErrors) == 0 {
-			return false, errors.Errorf("run must have both Outputs and Errors, got Outputs: %#v, Errors: %#v", run.Outputs.Val, run.FatalErrors)
-		}
-		sql := `UPDATE pipeline_runs SET state = :state, finished_at = :finished_at, all_errors= :all_errors, fatal_errors= :fatal_errors, outputs = :outputs WHERE id = :id`
-		if _, err = sqlx.NamedExec(tx, sql, run); err != nil {
-			return false, errors.Wrap(err, "StoreRun")
-		}
-	}
-
-	sql := `
+		sql := `
 		INSERT INTO pipeline_task_runs (pipeline_run_id, id, type, index, output, error, dot_id, created_at, finished_at)
 		VALUES (:pipeline_run_id, :id, :type, :index, :output, :error, :dot_id, :created_at, :finished_at)
 		ON CONFLICT (pipeline_run_id, dot_id) DO UPDATE SET
@@ -158,32 +156,33 @@ func (o *orm) StoreRun(tx postgres.Queryer, run *Run) (restart bool, err error) 
 		RETURNING *;
 		`
 
-	// NOTE: can't use Select() to auto scan because we're using NamedQuery,
-	// sqlx.Named + Select is possible but it's about the same amount of code
-	var rows *sqlx.Rows
-	rows, err = sqlx.NamedQuery(tx, sql, run.PipelineTaskRuns)
-	if err != nil {
-		return false, errors.Wrap(err, "StoreRun")
-	}
-	taskRuns := []TaskRun{}
-	if err = sqlx.StructScan(rows, &taskRuns); err != nil {
-		return false, errors.Wrap(err, "StoreRun")
-	}
-	// replace with new task run data
-	run.PipelineTaskRuns = taskRuns
-	return false, nil
+		// NOTE: can't use Select() to auto scan because we're using NamedQuery,
+		// sqlx.Named + Select is possible but it's about the same amount of code
+		var rows *sqlx.Rows
+		rows, err = sqlx.NamedQuery(tx, sql, run.PipelineTaskRuns)
+		if err != nil {
+			return errors.Wrap(err, "StoreRun")
+		}
+		taskRuns := []TaskRun{}
+		if err = sqlx.StructScan(rows, &taskRuns); err != nil {
+			return errors.Wrap(err, "StoreRun")
+		}
+		// replace with new task run data
+		run.PipelineTaskRuns = taskRuns
+		return nil
+	})
+	return
 }
 
 // Used for cleaning up a run that failed and is marked failEarly (should leave no trace of the run)
 func (o *orm) DeleteRun(id int64) error {
-	db := postgres.UnwrapGormDB(o.db)
 	// NOTE: this will cascade and wipe pipeline_task_runs too
-	_, err := db.Exec(`DELETE FROM pipeline_runs WHERE id = $1`, id)
+	_, err := o.db.Exec(`DELETE FROM pipeline_runs WHERE id = $1`, id)
 	return err
 }
 
 func (o *orm) UpdateTaskRunResult(taskID uuid.UUID, result Result) (run Run, start bool, err error) {
-	err = postgres.SqlxTransaction(context.Background(), postgres.UnwrapGormDB(o.db), func(tx *sqlx.Tx) error {
+	err = postgres.SqlxTransaction(context.Background(), o.db, func(tx *sqlx.Tx) error {
 		sql := `
 		SELECT pipeline_runs.*, pipeline_specs.dot_dag_source "pipeline_spec.dot_dag_source"
 		FROM pipeline_runs
@@ -249,7 +248,7 @@ func (o *orm) InsertFinishedRun(db postgres.Queryer, run Run, saveSuccessfulTask
 
 		query, args, e := tx.BindNamed(sql, run)
 		if e != nil {
-			return err
+			return e
 		}
 
 		if err = tx.GetContext(ctx, &run, query, args...); err != nil {
@@ -275,32 +274,39 @@ func (o *orm) InsertFinishedRun(db postgres.Queryer, run Run, saveSuccessfulTask
 }
 
 func (o *orm) DeleteRunsOlderThan(ctx context.Context, threshold time.Duration) error {
-	return o.db.
-		WithContext(ctx).
-		Exec(
-			`DELETE FROM pipeline_runs WHERE finished_at < ?`, time.Now().Add(-threshold),
-		).Error
+	_, err := o.db.ExecContext(ctx,
+		`DELETE FROM pipeline_runs WHERE finished_at < ?`, time.Now().Add(-threshold),
+	)
+	if err != nil {
+		return err
+	}
+	return nil
 }
 
-func (o *orm) FindRun(id int64) (Run, error) {
-	var run = Run{ID: id}
-	err := o.db.
-		Preload("PipelineSpec").
-		Preload("PipelineTaskRuns", func(db *gorm.DB) *gorm.DB {
-			return db.
-				Order("created_at ASC, id ASC")
-		}).First(&run).Error
-	return run, err
-}
-
-func (o *orm) GetAllRuns() ([]Run, error) {
+func (o *orm) FindRun(id int64) (r Run, err error) {
 	var runs []Run
-	err := o.db.
-		Preload("PipelineSpec").
-		Preload("PipelineTaskRuns", func(db *gorm.DB) *gorm.DB {
-			return db.
-				Order("created_at ASC, id ASC")
-		}).Find(&runs).Error
+	if err = o.db.Select(&runs, `SELECT * from pipeline_runs WHERE id = $1 LIMIT 1`, id); err != nil {
+		return r, errors.Wrap(err, "failed to load runs")
+	}
+	if len(runs) == 0 {
+		return r, gorm.ErrRecordNotFound
+	}
+	if err = loadAssociations(o.db, runs); err != nil {
+		return r, err
+	}
+	return runs[0], err
+}
+
+func (o *orm) GetAllRuns() (runs []Run, err error) {
+	err = o.db.Select(&runs, `SELECT * from pipeline_runs ORDER BY created_at ASC, id ASC`)
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to load runs")
+	}
+
+	err = loadAssociations(o.db, runs)
+	if err != nil {
+		return nil, err
+	}
 	return runs, err
 }
 
@@ -308,35 +314,69 @@ func (o *orm) GetUnfinishedRuns(ctx context.Context, now time.Time, fn func(run 
 	return postgres.Batch(func(offset, limit uint) (count uint, err error) {
 		var runs []Run
 
-		err = o.db.
-			WithContext(ctx).
-			Preload("PipelineSpec").
-			Preload("PipelineTaskRuns", func(db *gorm.DB) *gorm.DB {
-				return db.
-					Order("created_at ASC, id ASC")
-			}).
-			Where(`state = ? AND created_at < ?`, RunStatusRunning, now).
-			Order("created_at ASC, id ASC").
-			Limit(int(limit)).
-			Offset(int(offset)).
-			Find(&runs).Error
-
-		if ctx.Err() != nil {
-			return 0, nil
-		} else if err != nil {
-			return 0, err
-		}
-
-		for _, run := range runs {
-			if err := fn(run); err != nil {
-				return 0, err
+		err = postgres.SqlxTransaction(ctx, o.db, func(tx *sqlx.Tx) error {
+			err = tx.Select(&runs, `SELECT * from pipeline_runs WHERE state = $1 AND created_at < $2 ORDER BY created_at ASC, id ASC OFFSET $1 LIMIT $2`, RunStatusRunning, now, offset, limit)
+			if err != nil {
+				return errors.Wrap(err, "failed to load runs")
 			}
-		}
 
-		return uint(len(runs)), nil
+			err = loadAssociations(tx, runs)
+			if err != nil {
+				return err
+			}
+
+			for _, run := range runs {
+				if err := fn(run); err != nil {
+					return err
+				}
+			}
+			return nil
+		})
+
+		return uint(len(runs)), err
 	})
 }
 
-func (o *orm) DB() *gorm.DB {
+// loads PipelineSpec and PipelineTaskRuns for Runs in exactly 2 queries
+func loadAssociations(q postgres.Queryer, runs []Run) error {
+	if len(runs) == 0 {
+		return nil
+	}
+	var specs []Spec
+	var pipelineSpecIDM map[int32]Spec
+	var pipelineSpecIDs []int32 // keyed by pipelineSpecID
+	pipelineRunIDs := make([]int64, len(runs))
+	for i, run := range runs {
+		pipelineRunIDs[i] = run.ID
+		if _, exists := pipelineSpecIDM[run.PipelineSpecID]; !exists {
+			pipelineSpecIDs = append(pipelineSpecIDs, run.PipelineSpecID)
+			pipelineSpecIDM[run.PipelineSpecID] = Spec{}
+		}
+	}
+	if err := q.Select(&specs, `SELECT * FROM pipeline_specs WHERE id = ANY($1)`, pipelineSpecIDs); err != nil {
+		return errors.Wrap(err, "failed to postload pipeline_specs for runs")
+	}
+	for _, spec := range specs {
+		pipelineSpecIDM[spec.ID] = spec
+	}
+
+	var taskRuns []TaskRun
+	var taskRunPRIDM map[int64][]TaskRun // keyed by pipelineRunID
+	if err := q.Select(&taskRuns, `SELECT * FROM pipeline_task_runs WHERE pipeline_run_id = ANY($1) ORDER BY created_at ASC, id ASC`, pipelineRunIDs); err != nil {
+		return errors.Wrap(err, "failed to postload pipeline_task_runs for runs")
+	}
+	for _, taskRun := range taskRuns {
+		taskRunPRIDM[taskRun.PipelineRunID] = append(taskRunPRIDM[taskRun.PipelineRunID], taskRun)
+	}
+
+	for i, run := range runs {
+		runs[i].PipelineSpec = pipelineSpecIDM[run.PipelineSpecID]
+		runs[i].PipelineTaskRuns = taskRunPRIDM[run.ID]
+	}
+
+	return nil
+}
+
+func (o *orm) DB() *sqlx.DB {
 	return o.db
 }

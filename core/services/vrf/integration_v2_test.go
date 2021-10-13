@@ -415,7 +415,7 @@ func TestIntegrationVRFV2(t *testing.T) {
 	}).Toml()
 	jb, err := vrf.ValidatedVRFSpec(s)
 	require.NoError(t, err)
-	jb, err = app.JobSpawner().CreateJob(context.Background(), jb, jb.Name)
+	err = app.JobSpawner().CreateJob(context.Background(), &jb)
 	require.NoError(t, err)
 
 	registerProvingKeyHelper(t, uni, vrfkey)
@@ -589,7 +589,7 @@ func TestMaliciousConsumer(t *testing.T) {
 	}).Toml()
 	jb, err := vrf.ValidatedVRFSpec(s)
 	require.NoError(t, err)
-	jb, err = app.JobSpawner().CreateJob(context.Background(), jb, jb.Name)
+	err = app.JobSpawner().CreateJob(context.Background(), &jb)
 	require.NoError(t, err)
 	time.Sleep(1 * time.Second)
 

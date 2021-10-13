@@ -217,7 +217,7 @@ func (km *keyManager) save(callbacks ...func(*gorm.DB) error) error {
 		return errors.Wrap(err, "unable to encrypt keyRing")
 	}
 	return postgres.NewGormTransactionManager(km.orm.db).Transact(func(ctx context.Context) error {
-		tx := postgres.TxFromContext(ctx, km.orm.db)
+		tx := postgres.GormTxFromContext(ctx, km.orm.db)
 		err := NewORM(tx).saveEncryptedKeyRing(&ekb)
 		if err != nil {
 			return err
