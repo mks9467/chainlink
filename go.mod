@@ -29,8 +29,8 @@ require (
 	github.com/jpillora/backoff v1.0.0
 	github.com/kylelemons/godebug v1.1.0
 	github.com/lib/pq v1.10.3
-	github.com/libp2p/go-libp2p-core v0.8.5
-	github.com/libp2p/go-libp2p-peerstore v0.2.7
+	github.com/libp2p/go-libp2p-core v0.8.6
+	github.com/libp2p/go-libp2p-peerstore v0.3.0
 	github.com/manyminds/api2go v0.0.0-20171030193247-e7b693844a6f
 	github.com/mitchellh/go-homedir v1.1.0
 	github.com/mitchellh/mapstructure v1.4.2
@@ -125,8 +125,8 @@ require (
 	github.com/ipfs/go-datastore v0.4.5 // indirect
 	github.com/ipfs/go-ipfs-util v0.0.2 // indirect
 	github.com/ipfs/go-ipns v0.0.2 // indirect
-	github.com/ipfs/go-log v1.0.4 // indirect
-	github.com/ipfs/go-log/v2 v2.1.1 // indirect
+	github.com/ipfs/go-log v1.0.5 // indirect
+	github.com/ipfs/go-log/v2 v2.1.3 // indirect
 	github.com/jackc/chunkreader/v2 v2.0.1 // indirect
 	github.com/jackc/pgio v1.0.0 // indirect
 	github.com/jackc/pgpassfile v1.0.0 // indirect
