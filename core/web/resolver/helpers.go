@@ -3,12 +3,18 @@ package resolver
 import (
 	"database/sql"
 	"fmt"
+	"strconv"
 	"strings"
 
+	"github.com/graph-gophers/graphql-go"
 	"github.com/smartcontractkit/chainlink/core/assets"
 	"github.com/smartcontractkit/chainlink/core/bridges"
 	"github.com/smartcontractkit/chainlink/core/store/models"
 )
+
+func int32GQLID(i int32) graphql.ID {
+	return graphql.ID(strconv.Itoa(int(i)))
+}
 
 // These methods should be moved into the service
 

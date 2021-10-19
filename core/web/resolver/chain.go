@@ -1,8 +1,12 @@
 package resolver
 
 import (
+	"context"
+
+	"github.com/graph-gophers/dataloader"
 	"github.com/graph-gophers/graphql-go"
 	"github.com/smartcontractkit/chainlink/core/chains/evm/types"
+	"github.com/smartcontractkit/chainlink/core/web/loader"
 )
 
 // ChainResolver resolves the Chain type.
@@ -41,4 +45,18 @@ func (r *ChainResolver) CreatedAt() graphql.Time {
 // UpdatedAt resolves the chains's updated at field.
 func (r *ChainResolver) UpdatedAt() graphql.Time {
 	return graphql.Time{Time: r.chain.UpdatedAt}
+}
+
+func (r *ChainResolver) Nodes(ctx context.Context) ([]*NodeResolver, error) {
+	dl := loader.For(ctx)
+
+	thunk := dl.NodesByChainIDLoader.Load(ctx, dataloader.StringKey(r.chain.ID.String()))
+	result, err := thunk()
+	if err != nil {
+		return nil, err
+	}
+
+	nodes := result.([]types.Node)
+
+	return NewNodes(nodes), nil
 }
