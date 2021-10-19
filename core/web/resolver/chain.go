@@ -48,9 +48,9 @@ func (r *ChainResolver) UpdatedAt() graphql.Time {
 }
 
 func (r *ChainResolver) Nodes(ctx context.Context) ([]*NodeResolver, error) {
-	dl := loader.For(ctx)
+	ldr := loader.For(ctx)
 
-	thunk := dl.NodesByChainIDLoader.Load(ctx, dataloader.StringKey(r.chain.ID.String()))
+	thunk := ldr.NodesByChainIDLoader.Load(ctx, dataloader.StringKey(r.chain.ID.String()))
 	result, err := thunk()
 	if err != nil {
 		return nil, err

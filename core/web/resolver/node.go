@@ -49,9 +49,9 @@ func (r *NodeResolver) HTTPURL() string {
 
 // Chain resolves the node's chain object field.
 func (r *NodeResolver) Chain(ctx context.Context) (*ChainResolver, error) {
-	dl := loader.For(ctx)
+	ldr := loader.For(ctx)
 
-	thunk := dl.ChainsByIDLoader.Load(ctx, dataloader.StringKey(r.node.EVMChainID.String()))
+	thunk := ldr.ChainsByIDLoader.Load(ctx, dataloader.StringKey(r.node.EVMChainID.String()))
 	result, err := thunk()
 	if err != nil {
 		return nil, err

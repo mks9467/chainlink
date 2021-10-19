@@ -1,7 +1,6 @@
 package evm
 
 import (
-	"fmt"
 	"math/big"
 
 	"github.com/pkg/errors"
@@ -155,7 +154,6 @@ func (o *orm) GetNodesByChainIDs(chainIDs []utils.Big) (nodes []types.Node, err 
 		`SELECT * FROM nodes WHERE evm_chain_id IN (?) ORDER BY created_at;`,
 		chainIDs,
 	)
-	fmt.Println(sql)
 	if err != nil {
 		return nil, err
 	}

@@ -24,20 +24,10 @@ func New(app chainlink.Application) *Dataloader {
 	return &Dataloader{
 		app: app,
 
-		NodesByChainIDLoader: dataloader.NewBatchedLoader(nodes.getByChainID),
-		ChainsByIDLoader:     dataloader.NewBatchedLoader(chains.getByID),
+		NodesByChainIDLoader: dataloader.NewBatchedLoader(nodes.loadByChainIDs),
+		ChainsByIDLoader:     dataloader.NewBatchedLoader(chains.loadByIDs),
 	}
 }
-
-// GetUser wraps the User dataloader for efficient retrieval by user ID
-// func (dl *Dataloader) GetNodesByChainID(chainID string) (*types.Node, error) {
-// 	thunk := dl.NodesByChainIDLoader.Load(dl.ctx, dataloader.StringKey(chainID))
-// 	result, err := thunk()
-// 	if err != nil {
-// 		return nil, err
-// 	}
-// 	return result.(*model.User), nil
-// }
 
 // Middleware inserts the dataloader into the context
 func Middleware(app chainlink.Application) gin.HandlerFunc {

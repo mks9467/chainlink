@@ -13,17 +13,17 @@ type nodeBatcher struct {
 	app chainlink.Application
 }
 
-func (b *nodeBatcher) getByChainID(ctx context.Context, keys dataloader.Keys) []*dataloader.Result {
-	// create a map for remembering the order of keys passed in
+func (b *nodeBatcher) loadByChainIDs(ctx context.Context, keys dataloader.Keys) []*dataloader.Result {
+	// Create a map for remembering the order of keys passed in
 	keyOrder := make(map[string]int, len(keys))
-	// collect the keys to search for
+	// Collect the keys to search for
 	var chainIDs []utils.Big
 	for ix, key := range keys {
 		id := utils.Big{}
-		// TODO - Handle error
-		id.UnmarshalText([]byte(key.String()))
+		if err := id.UnmarshalText([]byte(key.String())); err == nil {
+			chainIDs = append(chainIDs, id)
+		}
 
-		chainIDs = append(chainIDs, id)
 		keyOrder[key.String()] = ix
 	}
 
@@ -49,7 +49,7 @@ func (b *nodeBatcher) getByChainID(ctx context.Context, keys dataloader.Keys) []
 		}
 	}
 
-	// fill array positions without any nodes
+	// fill array positions without any nodes as an empty slice
 	for _, ix := range keyOrder {
 		results[ix] = &dataloader.Result{Data: []types.Node{}, Error: nil}
 	}

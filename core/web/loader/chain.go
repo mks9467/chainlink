@@ -13,20 +13,20 @@ type chainBatcher struct {
 	app chainlink.Application
 }
 
-func (b *chainBatcher) getByID(ctx context.Context, keys dataloader.Keys) []*dataloader.Result {
-	// create a map for remembering the order of keys passed in
+func (b *chainBatcher) loadByIDs(ctx context.Context, keys dataloader.Keys) []*dataloader.Result {
+	// Create a map for remembering the order of keys passed in
 	keyOrder := make(map[string]int, len(keys))
-	// collect the keys to search for
+	// Collect the keys to search for
 	var chainIDs []utils.Big
 	for ix, key := range keys {
 		id := utils.Big{}
-		// TODO - Handle error
-		id.UnmarshalText([]byte(key.String()))
-
-		chainIDs = append(chainIDs, id)
+		if err := id.UnmarshalText([]byte(key.String())); err == nil {
+			chainIDs = append(chainIDs, id)
+		}
 		keyOrder[key.String()] = ix
 	}
 
+	// Fetch the chains
 	chains, err := b.app.EVMORM().GetChainsByIDs(chainIDs)
 	if err != nil {
 		return []*dataloader.Result{{Data: nil, Error: err}}
