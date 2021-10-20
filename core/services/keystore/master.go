@@ -211,25 +211,12 @@ func (km *keyManager) Unlock(password string) error {
 }
 
 // caller must hold lock!
-func (km *keyManager) save(callbacks ...func(*gorm.DB) error) error {
+func (km *keyManager) save(callbacks ...func(*sqlx.Tx) error) error {
 	ekb, err := km.keyRing.Encrypt(km.password, km.scryptParams)
 	if err != nil {
 		return errors.Wrap(err, "unable to encrypt keyRing")
 	}
-	return postgres.NewGormTransactionManager(km.orm.db).Transact(func(ctx context.Context) error {
-		tx := postgres.GormTxFromContext(ctx, km.orm.db)
-		err := NewORM(tx).saveEncryptedKeyRing(&ekb)
-		if err != nil {
-			return err
-		}
-		for _, callback := range callbacks {
-			err = callback(tx)
-			if err != nil {
-				return err
-			}
-		}
-		return nil
-	})
+	return km.orm.saveEncryptedKeyRing(&ekb, callbacks)
 }
 
 // caller must hold lock!

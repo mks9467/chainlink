@@ -22,7 +22,6 @@ func WithQueryer(queryer Queryer) func(q *Q) {
 
 func WithParentCtx(ctx context.Context) func(q *Q) {
 	return func(q *Q) {
-		EnsureNoTxInContext(ctx)
 		q.ParentCtx = ctx
 	}
 }

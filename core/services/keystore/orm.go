@@ -1,33 +1,44 @@
 package keystore
 
 import (
-	"github.com/pkg/errors"
 	"github.com/smartcontractkit/chainlink/core/services/keystore/keys/csakey"
 	"github.com/smartcontractkit/chainlink/core/services/keystore/keys/ethkey"
 	"github.com/smartcontractkit/chainlink/core/services/keystore/keys/ocrkey"
 	"github.com/smartcontractkit/chainlink/core/services/keystore/keys/p2pkey"
 	"github.com/smartcontractkit/chainlink/core/services/keystore/keys/vrfkey"
+	"github.com/smartcontractkit/chainlink/core/services/postgres"
+
+	"github.com/pkg/errors"
+	"github.com/smartcontractkit/sqlx"
 	"gorm.io/gorm"
 )
 
-func NewORM(db *gorm.DB) ksORM {
+func NewORM(db *sqlx.DB) ksORM {
 	return ksORM{
 		db: db,
 	}
 }
 
 type ksORM struct {
-	db *gorm.DB
+	db *sqlx.DB
 }
 
-func (orm ksORM) saveEncryptedKeyRing(kr *encryptedKeyRing) error {
-	err := orm.db.Exec(`
+func (orm ksORM) saveEncryptedKeyRing(kr *encryptedKeyRing, callbacks ...func(*sqlx.Tx) error) error {
+	return postgres.NewQ(orm.db).Transaction(func(tx *sqlx.Tx) error {
+		_, err := tx.Exec(`
 		UPDATE encrypted_key_rings
 		SET encrypted_keys = ?
-	`, kr.EncryptedKeys).Error
-	if err != nil {
-		return errors.Wrap(err, "while saving keyring")
-	}
+	`, kr.EncryptedKeys)
+		if err != nil {
+			return errors.Wrap(err, "while saving keyring")
+		}
+		for _, callback := range callbacks {
+			err = callback(tx)
+			if err != nil {
+				return err
+			}
+		}
+	})
 	return nil
 }
 
