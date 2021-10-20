@@ -39,7 +39,7 @@ type Runner interface {
 	// ExecuteRun executes a new run in-memory according to a spec and returns the results.
 	ExecuteRun(ctx context.Context, spec Spec, vars Vars, l logger.Logger) (run Run, trrs TaskRunResults, err error)
 	// InsertFinishedRun saves the run results in the database.
-	InsertFinishedRun(run Run, saveSuccessfulTaskRuns bool, qs ...postgres.Q) (int64, error)
+	InsertFinishedRun(run Run, saveSuccessfulTaskRuns bool, qopts ...postgres.QOpt) (int64, error)
 
 	// ExecuteAndInsertFinishedRun executes a new run in-memory according to a spec, persists and saves the results.
 	// It is a combination of ExecuteRun and InsertFinishedRun.
@@ -444,7 +444,7 @@ func (r *runner) ExecuteAndInsertFinishedRun(ctx context.Context, spec Spec, var
 		return 0, finalResult, nil
 	}
 
-	if runID, err = r.orm.InsertFinishedRun(run, saveSuccessfulTaskRuns, postgres.WithParentCtx(ctx)); err != nil {
+	if runID, err = r.orm.InsertFinishedRun(run, saveSuccessfulTaskRuns); err != nil {
 		return runID, finalResult, errors.Wrapf(err, "error inserting finished results for spec ID %v", spec.ID)
 	}
 	return runID, finalResult, nil
@@ -509,7 +509,7 @@ func (r *runner) Run(ctx context.Context, run *Run, l logger.Logger, saveSuccess
 			}
 
 			var restart bool
-			restart, err = r.orm.StoreRun(run, postgres.WithParentCtx(ctx))
+			restart, err = r.orm.StoreRun(run)
 			if err != nil {
 				return false, errors.Wrapf(err, "error storing run for spec ID %v state %v outputs %v errors %v finished_at %v",
 					run.PipelineSpec.ID, run.State, run.Outputs, run.FatalErrors, run.FinishedAt)
@@ -562,8 +562,8 @@ func (r *runner) ResumeRun(taskID uuid.UUID, value interface{}, err error) error
 	return nil
 }
 
-func (r *runner) InsertFinishedRun(run Run, saveSuccessfulTaskRuns bool, qs ...postgres.Q) (int64, error) {
-	return r.orm.InsertFinishedRun(run, saveSuccessfulTaskRuns, qs...)
+func (r *runner) InsertFinishedRun(run Run, saveSuccessfulTaskRuns bool, qopts ...postgres.QOpt) (int64, error) {
+	return r.orm.InsertFinishedRun(run, saveSuccessfulTaskRuns, qopts...)
 }
 
 func (r *runner) TestInsertFinishedRun(jobID int32, jobName string, jobType string, specID int32) (int64, error) {

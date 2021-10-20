@@ -31,13 +31,13 @@ var (
 //go:generate mockery --name ORM --output ./mocks/ --case=underscore
 
 type ORM interface {
-	CreateJob(jb *Job, qs ...postgres.Q) error
+	CreateJob(jb *Job, qopts ...postgres.QOpt) error
 	FindJobs(offset, limit int) ([]Job, int, error)
 	FindJobTx(id int32) (Job, error)
 	FindJob(ctx context.Context, id int32) (Job, error)
 	FindJobByExternalJobID(ctx context.Context, uuid uuid.UUID) (Job, error)
 	FindJobIDsWithBridge(name string) ([]int32, error)
-	DeleteJob(ctx context.Context, id int32) error
+	DeleteJob(id int32, qopts ...postgres.QOpt) error
 	RecordError(ctx context.Context, jobID int32, description string)
 	DismissError(ctx context.Context, errorID int32) error
 	Close() error
@@ -46,7 +46,6 @@ type ORM interface {
 
 type orm struct {
 	db          *sqlx.DB
-	txm         postgres.TransactionManager
 	chainSet    evm.ChainSet
 	keyStore    keystore.Master
 	pipelineORM pipeline.ORM
@@ -126,8 +125,8 @@ func (o *orm) Close() error {
 // CreateJob creates the job and it's associated spec record.
 // Expects an unmarshaled job spec as the jb argument i.e. output from ValidatedXX.
 // Scans all persisted records back into jb
-func (o *orm) CreateJob(jb *Job, qs ...postgres.Q) error {
-	q := postgres.NewQFromOpts(qs, o.db)
+func (o *orm) CreateJob(jb *Job, qopts ...postgres.QOpt) error {
+	q := postgres.NewQ(o.db, qopts...)
 	p := jb.Pipeline
 	for _, task := range p.Tasks {
 		if task.Type() == pipeline.TaskTypeBridge {
@@ -136,7 +135,7 @@ func (o *orm) CreateJob(jb *Job, qs ...postgres.Q) error {
 
 			sql := `SELECT EXISTS(SELECT 1 FROM bridge_types WHERE name = $1);`
 			var exists bool
-			err := o.db.QueryRowx(sql, name).Scan(&exists)
+			err := q.QueryRowx(sql, name).Scan(&exists)
 			if err != nil {
 				return err
 			}
@@ -268,7 +267,7 @@ func (o *orm) CreateJob(jb *Job, qs ...postgres.Q) error {
 			logger.Fatalf("Unsupported jb.Type: %v", jb.Type)
 		}
 
-		pipelineSpecID, err := o.pipelineORM.CreateSpec(p, jb.MaxTaskDuration, postgres.NewQFromTx(tx))
+		pipelineSpecID, err := o.pipelineORM.CreateSpec(p, jb.MaxTaskDuration, postgres.WithQueryer(tx))
 		if err != nil {
 			return errors.Wrap(err, "failed to create pipeline spec")
 		}
@@ -287,12 +286,12 @@ func (o *orm) CreateJob(jb *Job, qs ...postgres.Q) error {
 		return errors.Wrap(err, "CreateJobFailed")
 	}
 
-	return o.findJob(q, jb, "id", jobID)
+	return o.findJob(jb, "id", jobID, qopts...)
 }
 
 // DeleteJob removes a job
-func (o *orm) DeleteJob(id int32, qs ...postgres.Q) error {
-	q := postgres.NewQFromOpts(qs, o.db)
+func (o *orm) DeleteJob(id int32, qopts ...postgres.QOpt) error {
+	q := postgres.NewQ(o.db, qopts...)
 	sql := `
 		WITH deleted_jobs AS (
 			DELETE FROM jobs WHERE id = $1 RETURNING
@@ -334,8 +333,8 @@ func (o *orm) DeleteJob(id int32, qs ...postgres.Q) error {
 	return nil
 }
 
-func (o *orm) RecordError(jobID int32, description string, qs ...postgres.Q) {
-	q := postgres.NewQFromOpts(qs, o.db)
+func (o *orm) RecordError(ctx context.Context, jobID int32, description string) {
+	q := postgres.NewQ(o.db, postgres.WithParentCtx(ctx))
 	sql := `INSERT INTO job_spec_errors (job_id, description, occurrences, created_at, updated_at)
 	VALUES ($1, $2, 1, $3, $3)
 	ON CONFLICT (job_id, description) DO UPDATE SET
@@ -352,8 +351,8 @@ func (o *orm) RecordError(jobID int32, description string, qs ...postgres.Q) {
 	o.lggr.ErrorIf(err, fmt.Sprintf("Error creating SpecError %v", description))
 }
 
-func (o *orm) DismissError(ID int32, qopts ...postgres.QOpt) error {
-	q := postgres.NewQ(o.db, qopts...)
+func (o *orm) DismissError(ctx context.Context, ID int32) error {
+	q := postgres.NewQ(o.db, postgres.WithParentCtx(ctx))
 	res, err := q.Exec("DELETE FROM job_spec_errors WHERE id = $1", ID)
 	if err != nil {
 		return errors.Wrap(err, "failed to dismiss error")
@@ -435,18 +434,18 @@ func (o *orm) FindJobTx(id int32) (Job, error) {
 
 // FindJob returns job by ID, with all relations preloaded
 func (o *orm) FindJob(ctx context.Context, id int32) (jb Job, err error) {
-	err = o.findJob(ctx, &jb, "id", id)
+	err = o.findJob(&jb, "id", id, postgres.WithParentCtx(ctx))
 	return
 }
 
 func (o *orm) FindJobByExternalJobID(ctx context.Context, externalJobID uuid.UUID) (jb Job, err error) {
-	err = o.findJob(ctx, &jb, "external_job_id", externalJobID)
+	err = o.findJob(&jb, "external_job_id", externalJobID, postgres.WithParentCtx(ctx))
 	return
 }
 
-func (o *orm) findJob(ctx context.Context, jb *Job, col string, arg interface{}) error {
-	q := postgres.QueryerFromContext(ctx, o.db)
-	return postgres.SqlxTransaction(ctx, q, func(tx *sqlx.Tx) error {
+func (o *orm) findJob(jb *Job, col string, arg interface{}, qopts ...postgres.QOpt) error {
+	q := postgres.NewQ(o.db, qopts...)
+	return q.Transaction(func(tx *sqlx.Tx) error {
 		sql := fmt.Sprintf(`SELECT * FROM jobs WHERE %s = $1 LIMIT 1`, col)
 		err := tx.Get(jb, sql, arg)
 		if err != nil {
@@ -505,45 +504,6 @@ func (o *orm) FindJobIDsWithBridge(name string) (jids []int32, err error) {
 		return nil
 	})
 	return jids, errors.Wrap(err, "FindJobIDsWithBridge failed")
-}
-
-// Preload PipelineSpec.JobID for each Run
-func (o *orm) preloadJobIDs(runs []pipeline.Run) error {
-	// Abort early if there are no runs
-	if len(runs) == 0 {
-		return nil
-	}
-
-	ids := make([]int32, 0, len(runs))
-	for _, run := range runs {
-		ids = append(ids, run.PipelineSpecID)
-	}
-
-	// construct a WHERE IN query
-	sql := `SELECT id, pipeline_spec_id FROM jobs WHERE pipeline_spec_id IN (?);`
-	query, args, err := sqlx.In(sql, ids)
-	if err != nil {
-		return err
-	}
-	query = o.db.Rebind(query)
-	var results []struct {
-		ID             int32
-		PipelineSpecID int32
-	}
-	if err := o.db.Select(&results, query, args...); err != nil {
-		return err
-	}
-
-	// fill in fields
-	for i := range runs {
-		for _, result := range results {
-			if result.PipelineSpecID == runs[i].PipelineSpecID {
-				runs[i].PipelineSpec.JobID = result.ID
-			}
-		}
-	}
-
-	return nil
 }
 
 // PipelineRuns returns pipeline runs for a job, with spec and taskruns loaded, latest first

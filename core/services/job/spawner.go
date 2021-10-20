@@ -38,7 +38,7 @@ type (
 		jobTypeDelegates map[Type]Delegate
 		activeJobs       map[int32]activeJob
 		activeJobsMu     sync.RWMutex
-		txm              postgres.TransactionManager
+		db               *sqlx.DB
 
 		utils.StartStopOnce
 		chStop chan struct{}
@@ -185,6 +185,7 @@ func (js *spawner) CreateJob(ctx context.Context, jb *Job) error {
 	ctx, cancel := utils.CombinedContext(js.chStop, ctx)
 	defer cancel()
 
+	q := postgres.NewQ(js.db, postgres.WithParentCtx(ctx))
 	ctx, cancel = context.WithTimeout(ctx, postgres.DefaultQueryTimeout)
 	defer cancel()
 	// TODO: Resolve this context/transaction situation and check for more
