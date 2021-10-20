@@ -39,7 +39,7 @@ type Runner interface {
 	// ExecuteRun executes a new run in-memory according to a spec and returns the results.
 	ExecuteRun(ctx context.Context, spec Spec, vars Vars, l logger.Logger) (run Run, trrs TaskRunResults, err error)
 	// InsertFinishedRun saves the run results in the database.
-	InsertFinishedRun(db postgres.Queryer, run Run, saveSuccessfulTaskRuns bool) (int64, error)
+	InsertFinishedRun(run Run, saveSuccessfulTaskRuns bool, qs ...postgres.Q) (int64, error)
 
 	// ExecuteAndInsertFinishedRun executes a new run in-memory according to a spec, persists and saves the results.
 	// It is a combination of ExecuteRun and InsertFinishedRun.
@@ -229,7 +229,7 @@ func (r *runner) initializePipeline(run *Run) (*Pipeline, error) {
 			task.(*HTTPTask).config = r.config
 		case TaskTypeBridge:
 			task.(*BridgeTask).config = r.config
-			task.(*BridgeTask).db = r.orm.DB()
+			task.(*BridgeTask).queryer = r.orm.DB()
 		case TaskTypeETHCall:
 			task.(*ETHCallTask).chainSet = r.chainSet
 			task.(*ETHCallTask).config = r.config
@@ -240,7 +240,6 @@ func (r *runner) initializePipeline(run *Run) (*Pipeline, error) {
 		case TaskTypeEstimateGasLimit:
 			task.(*EstimateGasLimitTask).chainSet = r.chainSet
 		case TaskTypeETHTx:
-			task.(*ETHTxTask).db = r.orm.DB()
 			task.(*ETHTxTask).keyStore = r.ethKeyStore
 			task.(*ETHTxTask).chainSet = r.chainSet
 		default:
@@ -445,7 +444,7 @@ func (r *runner) ExecuteAndInsertFinishedRun(ctx context.Context, spec Spec, var
 		return 0, finalResult, nil
 	}
 
-	if runID, err = r.orm.InsertFinishedRun(r.orm.DB(), run, saveSuccessfulTaskRuns); err != nil {
+	if runID, err = r.orm.InsertFinishedRun(run, saveSuccessfulTaskRuns, postgres.WithParentCtx(ctx)); err != nil {
 		return runID, finalResult, errors.Wrapf(err, "error inserting finished results for spec ID %v", spec.ID)
 	}
 	return runID, finalResult, nil
@@ -462,11 +461,7 @@ func (r *runner) Run(ctx context.Context, run *Run, l logger.Logger, saveSuccess
 
 	preinsert := pipeline.RequiresPreInsert()
 
-	queryCtx, cancel := postgres.DefaultQueryCtxWithParent(ctx)
-	defer cancel()
-
-	// TODO: Fix this
-	err = postgres.SqlxTransaction(queryCtx, r.orm.DB(), func(tx *sqlx.Tx) error {
+	err = postgres.NewQ(r.orm.DB(), postgres.WithParentCtx(ctx)).Transaction(func(tx *sqlx.Tx) error {
 		// OPTIMISATION: avoid an extra db write if there is no async tasks present or if this is a resumed run
 		if preinsert && run.ID == 0 {
 			now := time.Now()
@@ -485,7 +480,7 @@ func (r *runner) Run(ctx context.Context, run *Run, l logger.Logger, saveSuccess
 				default:
 				}
 			}
-			if err = r.orm.CreateRun(tx, run); err != nil {
+			if err = r.orm.CreateRun(run, postgres.WithQueryer(tx)); err != nil {
 				return err
 			}
 		}
@@ -494,7 +489,7 @@ func (r *runner) Run(ctx context.Context, run *Run, l logger.Logger, saveSuccess
 			return fn(tx)
 		}
 		return nil
-	}, postgres.WithoutDeadline())
+	})
 	if err != nil {
 		return false, err
 	}
@@ -514,7 +509,7 @@ func (r *runner) Run(ctx context.Context, run *Run, l logger.Logger, saveSuccess
 			}
 
 			var restart bool
-			restart, err = r.orm.StoreRun(postgres.UnwrapGormDB(r.orm.DB()), run)
+			restart, err = r.orm.StoreRun(run, postgres.WithParentCtx(ctx))
 			if err != nil {
 				return false, errors.Wrapf(err, "error storing run for spec ID %v state %v outputs %v errors %v finished_at %v",
 					run.PipelineSpec.ID, run.State, run.Outputs, run.FatalErrors, run.FinishedAt)
@@ -533,7 +528,7 @@ func (r *runner) Run(ctx context.Context, run *Run, l logger.Logger, saveSuccess
 				return false, nil
 			}
 
-			if _, err = r.orm.InsertFinishedRun(postgres.UnwrapGormDB(r.orm.DB()), *run, saveSuccessfulTaskRuns); err != nil {
+			if _, err = r.orm.InsertFinishedRun(*run, saveSuccessfulTaskRuns, postgres.WithParentCtx(ctx)); err != nil {
 				return false, errors.Wrapf(err, "error storing run for spec ID %v", run.PipelineSpec.ID)
 			}
 		}
@@ -567,13 +562,13 @@ func (r *runner) ResumeRun(taskID uuid.UUID, value interface{}, err error) error
 	return nil
 }
 
-func (r *runner) InsertFinishedRun(db postgres.Queryer, run Run, saveSuccessfulTaskRuns bool) (int64, error) {
-	return r.orm.InsertFinishedRun(db, run, saveSuccessfulTaskRuns)
+func (r *runner) InsertFinishedRun(run Run, saveSuccessfulTaskRuns bool, qs ...postgres.Q) (int64, error) {
+	return r.orm.InsertFinishedRun(run, saveSuccessfulTaskRuns, qs...)
 }
 
-func (r *runner) TestInsertFinishedRun(db *gorm.DB, jobID int32, jobName string, jobType string, specID int32) (int64, error) {
+func (r *runner) TestInsertFinishedRun(jobID int32, jobName string, jobType string, specID int32) (int64, error) {
 	t := time.Now()
-	runID, err := r.InsertFinishedRun(postgres.UnwrapGorm(db), Run{
+	runID, err := r.InsertFinishedRun(Run{
 		State:          RunStatusCompleted,
 		PipelineSpecID: specID,
 		AllErrors:      RunErrors{null.String{}},

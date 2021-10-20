@@ -26,8 +26,8 @@ type BridgeTask struct {
 	IncludeInputAtKey string `json:"includeInputAtKey"`
 	Async             string `json:"async"`
 
-	db     postgres.Queryer
-	config Config
+	queryer postgres.Queryer
+	config  Config
 }
 
 var _ Task = (*BridgeTask)(nil)
@@ -143,7 +143,7 @@ func (t *BridgeTask) Run(ctx context.Context, vars Vars, inputs []Result) (resul
 
 func (t BridgeTask) getBridgeURLFromName(name StringParam) (URLParam, error) {
 	var bt bridges.BridgeType
-	err := t.db.First(&bt, "name = ?", string(name)).Error
+	err := t.queryer.Get(&bt, "name = $1", string(name))
 	if err != nil {
 		return URLParam{}, errors.Wrapf(err, "could not find bridge with name '%s'", name)
 	}

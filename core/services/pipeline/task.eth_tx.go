@@ -15,7 +15,6 @@ import (
 	"github.com/smartcontractkit/chainlink/core/logger"
 	"github.com/smartcontractkit/chainlink/core/null"
 	"github.com/smartcontractkit/chainlink/core/services/bulletprooftxmanager"
-	"github.com/smartcontractkit/chainlink/core/services/postgres"
 )
 
 //
@@ -33,7 +32,6 @@ type ETHTxTask struct {
 	EVMChainID       string `json:"evmChainID" mapstructure:"evmChainID"`
 	Simulate         string `json:"simulate" mapstructure:"simulate"`
 
-	db       postgres.Queryer
 	keyStore ETHKeyStore
 	chainSet evm.ChainSet
 }
@@ -149,7 +147,7 @@ func (t *ETHTxTask) Run(_ context.Context, vars Vars, inputs []Result) (result R
 		newTx.MinConfirmations = null.Uint32From(uint32(minConfirmations))
 	}
 
-	_, err = txManager.CreateEthTransaction(t.db, newTx)
+	_, err = txManager.CreateEthTransaction(newTx)
 	if err != nil {
 		return Result{Error: errors.Wrapf(ErrTaskRunFailed, "while creating transaction: %v", err)}, retryableRunInfo()
 	}

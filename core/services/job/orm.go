@@ -31,7 +31,7 @@ var (
 //go:generate mockery --name ORM --output ./mocks/ --case=underscore
 
 type ORM interface {
-	CreateJob(ctx context.Context, jb *Job) error
+	CreateJob(jb *Job, qs ...postgres.Q) error
 	FindJobs(offset, limit int) ([]Job, int, error)
 	FindJobTx(id int32) (Job, error)
 	FindJob(ctx context.Context, id int32) (Job, error)
@@ -126,7 +126,8 @@ func (o *orm) Close() error {
 // CreateJob creates the job and it's associated spec record.
 // Expects an unmarshaled job spec as the jb argument i.e. output from ValidatedXX.
 // Scans all persisted records back into jb
-func (o *orm) CreateJob(ctx context.Context, jb *Job) error {
+func (o *orm) CreateJob(jb *Job, qs ...postgres.Q) error {
+	q := postgres.NewQFromOpts(qs, o.db)
 	p := jb.Pipeline
 	for _, task := range p.Tasks {
 		if task.Type() == pipeline.TaskTypeBridge {
@@ -146,8 +147,7 @@ func (o *orm) CreateJob(ctx context.Context, jb *Job) error {
 	}
 
 	var jobID int32
-	q := postgres.QueryerFromContext(ctx, o.db)
-	err := postgres.SqlxTransaction(ctx, q, func(tx *sqlx.Tx) error {
+	err := q.Transaction(func(tx *sqlx.Tx) error {
 		// Autogenerate a job ID if not specified
 		if jb.ExternalJobID == (uuid.UUID{}) {
 			jb.ExternalJobID = uuid.NewV4()
@@ -268,7 +268,7 @@ func (o *orm) CreateJob(ctx context.Context, jb *Job) error {
 			logger.Fatalf("Unsupported jb.Type: %v", jb.Type)
 		}
 
-		pipelineSpecID, err := o.pipelineORM.CreateSpec(tx, p, jb.MaxTaskDuration)
+		pipelineSpecID, err := o.pipelineORM.CreateSpec(p, jb.MaxTaskDuration, postgres.NewQFromTx(tx))
 		if err != nil {
 			return errors.Wrap(err, "failed to create pipeline spec")
 		}
@@ -287,12 +287,12 @@ func (o *orm) CreateJob(ctx context.Context, jb *Job) error {
 		return errors.Wrap(err, "CreateJobFailed")
 	}
 
-	return o.findJob(ctx, jb, "id", jobID)
+	return o.findJob(q, jb, "id", jobID)
 }
 
 // DeleteJob removes a job
-func (o *orm) DeleteJob(ctx context.Context, id int32) error {
-	q := postgres.QueryerFromContext(ctx, o.db)
+func (o *orm) DeleteJob(id int32, qs ...postgres.Q) error {
+	q := postgres.NewQFromOpts(qs, o.db)
 	sql := `
 		WITH deleted_jobs AS (
 			DELETE FROM jobs WHERE id = $1 RETURNING
@@ -327,21 +327,21 @@ func (o *orm) DeleteJob(ctx context.Context, id int32) error {
 			DELETE FROM direct_request_specs WHERE id IN (SELECT direct_request_spec_id FROM deleted_jobs)
 		)
 		DELETE FROM pipeline_specs WHERE id IN (SELECT pipeline_spec_id FROM deleted_jobs)`
-	_, err := q.ExecContext(ctx, sql, id)
+	_, err := q.Exec(sql, id)
 	if err != nil {
 		return errors.Wrap(err, "DeleteJob failed to delete job")
 	}
 	return nil
 }
 
-func (o *orm) RecordError(ctx context.Context, jobID int32, description string) {
-	q := postgres.QueryerFromContext(ctx, o.db)
+func (o *orm) RecordError(jobID int32, description string, qs ...postgres.Q) {
+	q := postgres.NewQFromOpts(qs, o.db)
 	sql := `INSERT INTO job_spec_errors (job_id, description, occurrences, created_at, updated_at)
 	VALUES ($1, $2, 1, $3, $3)
 	ON CONFLICT (job_id, description) DO UPDATE SET
 	occurrences = job_spec_errors.occurrences + 1,
 	updated_at = excluded.updated_at`
-	_, err := q.ExecContext(ctx, sql, jobID, description, time.Now())
+	_, err := q.Exec(sql, jobID, description, time.Now())
 	// Noop if the job has been deleted.
 	pqErr, ok := err.(*pgconn.PgError)
 	if err != nil && ok && pqErr.Code == "23503" {
@@ -352,9 +352,9 @@ func (o *orm) RecordError(ctx context.Context, jobID int32, description string) 
 	o.lggr.ErrorIf(err, fmt.Sprintf("Error creating SpecError %v", description))
 }
 
-func (o *orm) DismissError(ctx context.Context, ID int32) error {
-	q := postgres.QueryerFromContext(ctx, o.db)
-	res, err := q.ExecContext(ctx, "DELETE FROM job_spec_errors WHERE id = $1", ID)
+func (o *orm) DismissError(ID int32, qopts ...postgres.QOpt) error {
+	q := postgres.NewQ(o.db, qopts...)
+	res, err := q.Exec("DELETE FROM job_spec_errors WHERE id = $1", ID)
 	if err != nil {
 		return errors.Wrap(err, "failed to dismiss error")
 	}

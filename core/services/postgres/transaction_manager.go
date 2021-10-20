@@ -6,7 +6,6 @@ import (
 	"fmt"
 
 	"github.com/pkg/errors"
-	"github.com/smartcontractkit/sqlx"
 	"gorm.io/gorm"
 )
 
@@ -144,104 +143,5 @@ func GetGormTxFromContext(ctx context.Context) *gorm.DB {
 
 // InjectGormTxIntoContext injects the tx into the context
 func InjectGormTxIntoContext(ctx context.Context, tx *gorm.DB) context.Context {
-	return context.WithValue(ctx, txKey{}, tx)
-}
-
-type sqlxTransactionManager struct {
-	db *sqlx.DB
-}
-
-func NewSqlxTransactionManager(db *sqlx.DB) TransactionManager {
-	return &sqlxTransactionManager{db: db}
-}
-
-// Transact creates a new transaction with sane defaults.
-func (txm *sqlxTransactionManager) Transact(fn TxFn, optsFn ...TransactionOption) (err error) {
-	ctx, cancel := DefaultQueryCtx()
-	defer cancel()
-
-	return txm.TransactWithContext(ctx, fn, optsFn...)
-}
-
-// Transact creates a new transaction and injects it into the provided context.
-// It handles the rollback/commit based on the error object returned by the `TxFn`.
-func (txm *sqlxTransactionManager) TransactWithContext(ctx context.Context, fn TxFn, optsFn ...TransactionOption) (err error) {
-	// Initialize the options with defaults
-	opts := &transactionOptions{
-		txOpts: DefaultSqlTxOptions,
-	}
-
-	// Overwrite any opts with declared option setters
-	for _, set := range optsFn {
-		set(opts)
-	}
-
-	// Start the transaction and insert it into the context.
-	tx, err := txm.db.BeginTxx(ctx, &opts.txOpts)
-	if err != nil {
-		return errors.Wrap(err, "failed to Begin transaction")
-	}
-	ctx = InjectSqlxTxIntoContext(ctx, tx)
-
-	// Ensure that a deadline is set unless disabled by an option.
-	if !opts.withoutDeadline {
-		if _, ok := ctx.Deadline(); !ok {
-			return ErrNoDeadlineSet
-		}
-	}
-
-	// Handle rollback/commits
-	defer func() {
-		if p := recover(); p != nil {
-			// A panic occurred, rollback and repanic. We are ignoring the error
-			// here since we are panicking.
-			tx.Rollback()
-			panic(p)
-		} else if err != nil {
-			// Something went wrong, rollback. We are ignoring the error here
-			// because we want the error that caused the rollback to be exposed.
-			tx.Rollback()
-		} else {
-			// All good! Time to commit.
-			err = tx.Commit()
-		}
-	}()
-
-	// Set the local lock timeout
-	_, err = tx.Exec(
-		fmt.Sprintf(`SET LOCAL lock_timeout = %v; SET LOCAL idle_in_transaction_session_timeout = %v;`,
-			LockTimeout.Milliseconds(),
-			IdleInTxSessionTimeout.Milliseconds()),
-	)
-	if err != nil {
-		return errors.Wrap(err, "error setting transaction timeouts")
-	}
-
-	err = fn(ctx)
-	return err
-}
-
-// QueryerFromContext extracts the tx from the context. If no transaction value is
-// provided in the context, it returns the gorm.DB.
-func QueryerFromContext(ctx context.Context, db *sqlx.DB) Queryer {
-	if tx, ok := ctx.Value(txKey{}).(*sqlx.Tx); ok {
-		return tx
-	}
-
-	return db
-}
-
-// GetSqlxTxFromContext extracts the tx from the context. Returns nil if no
-// tx exists.
-func GetSqlxTxFromContext(ctx context.Context) *sqlx.Tx {
-	if tx, ok := ctx.Value(txKey{}).(*sqlx.Tx); ok {
-		return tx
-	}
-
-	return nil
-}
-
-// InjectSqlxTxIntoContext injects the tx into the context
-func InjectSqlxTxIntoContext(ctx context.Context, tx *sqlx.Tx) context.Context {
 	return context.WithValue(ctx, txKey{}, tx)
 }

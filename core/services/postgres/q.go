@@ -8,12 +8,39 @@ import (
 	"github.com/smartcontractkit/sqlx"
 )
 
+type QOpt func(*Q)
+
+// WithQueryer sets the
+func WithQueryer(queryer Queryer) func(q *Q) {
+	return func(q *Q) {
+		if q.Queryer != nil {
+			panic("queryer already set")
+		}
+		q.Queryer = queryer
+	}
+}
+
+func WithParentCtx(ctx context.Context) func(q *Q) {
+	return func(q *Q) {
+		EnsureNoTxInContext(ctx)
+		q.ParentCtx = ctx
+	}
+}
+
+func WithoutImplicitDeadline() func(q *Q) {
+	return func(q *Q) {
+		q.DisableImplicitDeadline = true
+	}
+}
+
 var _ Queryer = Q{}
 
 // Q wraps an underlying queryer (either a *sqlx.DB or a *sqlx.Tx)
 //
 // It is designed to make handling *sqlx.Tx or *sqlx.DB a little bit safer by
 // preventing footguns such as having no deadline on contexts.
+//
+// It also handles nesting transactions.
 //
 // It automatically adds the default context deadline to all non-context
 // queries (if you _really_ want to issue a query without a context, use the
@@ -23,39 +50,25 @@ var _ Queryer = Q{}
 // can do.
 type Q struct {
 	Queryer
-	ParentCtx              context.Context
-	DisableDefaultDeadline bool
-}
-
-func (q Q) Context() (context.Context, context.CancelFunc) {
-	if q.DisableDefaultDeadline && q.ParentCtx == nil {
-		return context.Background(), func() {}
-	} else if !q.DisableDefaultDeadline && q.ParentCtx == nil {
-		return DefaultQueryCtx()
-	} else if q.DisableDefaultDeadline {
-		return q.ParentCtx, func() {}
-	} else {
-		return DefaultQueryCtxWithParent(q.ParentCtx)
-	}
-}
-
-func NewQ(queryer Queryer) Q {
-	return Q{Queryer: queryer}
+	ParentCtx               context.Context
+	DisableImplicitDeadline bool
 }
 
 // NewQFromOpts is intended to be used in ORMs where the caller may wish to use
 // either the default DB or pass an explicit Tx
-func NewQFromOpts(qs []Q, queryer Queryer) Q {
-	if len(qs) == 0 {
-		return Q{Queryer: queryer}
-	} else if len(qs) > 1 {
-		panic("too many args")
+func NewQFromOpts(qopts []QOpt) (q Q) {
+	for _, opt := range qopts {
+		opt(&q)
 	}
-	return qs[0]
+	return q
 }
 
-func NewQWithParentCtx(parentCtx context.Context, queryer Queryer) Q {
-	return Q{ParentCtx: parentCtx, Queryer: queryer}
+func NewQ(queryer Queryer, qopts ...QOpt) (q Q) {
+	q = NewQFromOpts(qopts)
+	if q.Queryer == nil {
+		q.Queryer = queryer
+	}
+	return
 }
 
 func PrepareGet(q Queryer, sql string, dest interface{}, arg interface{}) error {
@@ -72,6 +85,18 @@ func PrepareQueryRowx(q Queryer, sql string, dest interface{}, arg interface{}) 
 		return errors.Wrap(err, "error preparing named statement")
 	}
 	return errors.Wrap(stmt.QueryRowx(arg).Scan(dest), "error querying row")
+}
+
+func (q Q) Context() (context.Context, context.CancelFunc) {
+	if q.DisableImplicitDeadline && q.ParentCtx == nil {
+		return context.Background(), func() {}
+	} else if !q.DisableImplicitDeadline && q.ParentCtx == nil {
+		return DefaultQueryCtx()
+	} else if q.DisableImplicitDeadline {
+		return q.ParentCtx, func() {}
+	} else {
+		return DefaultQueryCtxWithParent(q.ParentCtx)
+	}
 }
 
 func (q Q) Transaction(fc func(tx *sqlx.Tx) error) error {
@@ -103,4 +128,9 @@ func (q Q) Select(dest interface{}, query string, args ...interface{}) error {
 	ctx, cancel := q.Context()
 	defer cancel()
 	return q.Queryer.SelectContext(ctx, dest, query, args...)
+}
+func (q Q) Get(dest interface{}, query string, args ...interface{}) error {
+	ctx, cancel := q.Context()
+	defer cancel()
+	return q.Queryer.GetContext(ctx, dest, query, args...)
 }

@@ -20,12 +20,12 @@ var (
 //go:generate mockery --name ORM --output ./mocks/ --case=underscore
 
 type ORM interface {
-	CreateSpec(pipeline Pipeline, maxTaskTimeout models.Interval, qs ...postgres.Q) (int32, error)
-	CreateRun(run *Run, qs ...postgres.Q) (err error)
+	CreateSpec(pipeline Pipeline, maxTaskTimeout models.Interval, qopts ...postgres.QOpt) (int32, error)
+	CreateRun(run *Run, qopts ...postgres.QOpt) (err error)
 	DeleteRun(id int64) error
-	StoreRun(run *Run, qs ...postgres.Q) (restart bool, err error)
+	StoreRun(run *Run, qopts ...postgres.QOpt) (restart bool, err error)
 	UpdateTaskRunResult(taskID uuid.UUID, result Result) (run Run, start bool, err error)
-	InsertFinishedRun(run Run, saveSuccessfulTaskRuns bool, qs ...postgres.Q) (runID int64, err error)
+	InsertFinishedRun(run Run, saveSuccessfulTaskRuns bool, qopts ...postgres.QOpt) (runID int64, err error)
 	DeleteRunsOlderThan(context.Context, time.Duration) error
 	FindRun(id int64) (Run, error)
 	GetAllRuns() ([]Run, error)
@@ -43,8 +43,8 @@ func NewORM(db *sqlx.DB) *orm {
 	return &orm{db}
 }
 
-func (o *orm) CreateSpec(pipeline Pipeline, maxTaskDuration models.Interval, qs ...postgres.Q) (id int32, err error) {
-	q := postgres.NewQFromOpts(qs, o.db)
+func (o *orm) CreateSpec(pipeline Pipeline, maxTaskDuration models.Interval, qopts ...postgres.QOpt) (id int32, err error) {
+	q := postgres.NewQ(o.db, qopts...)
 	sql := `INSERT INTO pipeline_specs (dot_dag_source, max_task_duration, created_at)
 	VALUES ($1, $2, NOW())
 	RETURNING id;`
@@ -52,12 +52,12 @@ func (o *orm) CreateSpec(pipeline Pipeline, maxTaskDuration models.Interval, qs 
 	return id, errors.WithStack(err)
 }
 
-func (o *orm) CreateRun(run *Run, qs ...postgres.Q) (err error) {
+func (o *orm) CreateRun(run *Run, qopts ...postgres.QOpt) (err error) {
 	if run.CreatedAt.IsZero() {
 		return errors.New("run.CreatedAt must be set")
 	}
 
-	q := postgres.NewQFromOpts(qs, o.db)
+	q := postgres.NewQ(o.db, qopts...)
 	q.Transaction(func(tx *sqlx.Tx) error {
 		sql := `INSERT INTO pipeline_runs (pipeline_spec_id, meta, inputs, created_at, state)
 		VALUES (:pipeline_spec_id, :meta, :inputs, :created_at, :state)
@@ -93,8 +93,8 @@ func (o *orm) CreateRun(run *Run, qs ...postgres.Q) (err error) {
 
 // StoreRun will persist a partially executed run before suspending, or finish a run.
 // If `restart` is true, then new task run data is available and the run should be resumed immediately.
-func (o *orm) StoreRun(run *Run, qs ...postgres.Q) (restart bool, err error) {
-	q := postgres.NewQFromOpts(qs, o.db)
+func (o *orm) StoreRun(run *Run, qopts ...postgres.QOpt) (restart bool, err error) {
+	q := postgres.NewQ(o.db, qopts...)
 	err = q.Transaction(func(tx *sqlx.Tx) error {
 		finished := run.FinishedAt.Valid
 		if !finished {
@@ -225,7 +225,7 @@ func (o *orm) UpdateTaskRunResult(taskID uuid.UUID, result Result) (run Run, sta
 // If saveSuccessfulTaskRuns = false, we only save errored runs.
 // That way if the job is run frequently (such as OCR) we avoid saving a large number of successful task runs
 // which do not provide much value.
-func (o *orm) InsertFinishedRun(run Run, saveSuccessfulTaskRuns bool, qs ...postgres.Q) (runID int64, err error) {
+func (o *orm) InsertFinishedRun(run Run, saveSuccessfulTaskRuns bool, qopts ...postgres.QOpt) (runID int64, err error) {
 	if run.CreatedAt.IsZero() {
 		return 0, errors.New("run.CreatedAt must be set")
 	}
@@ -239,7 +239,7 @@ func (o *orm) InsertFinishedRun(run Run, saveSuccessfulTaskRuns bool, qs ...post
 		return 0, errors.New("must provide task run results")
 	}
 
-	q := postgres.NewQFromOpts(qs, o.db)
+	q := postgres.NewQ(o.db, qopts...)
 	err = q.Transaction(func(tx *sqlx.Tx) error {
 		sql := `INSERT INTO pipeline_runs (pipeline_spec_id, meta, all_errors, fatal_errors, inputs, outputs, created_at, finished_at, state)
 		VALUES (:pipeline_spec_id, :meta, :all_errors, :fatal_errors, :inputs, :outputs, :created_at, :finished_at, :state)
@@ -273,7 +273,7 @@ func (o *orm) InsertFinishedRun(run Run, saveSuccessfulTaskRuns bool, qs ...post
 }
 
 func (o *orm) DeleteRunsOlderThan(ctx context.Context, threshold time.Duration) error {
-	q := postgres.NewQWithParentCtx(ctx, o.db)
+	q := postgres.NewQ(o.db, postgres.WithParentCtx(ctx))
 	_, err := q.Exec(`DELETE FROM pipeline_runs WHERE finished_at < ?`, time.Now().Add(-threshold))
 	if err != nil {
 		return err
@@ -310,7 +310,7 @@ func (o *orm) GetAllRuns() (runs []Run, err error) {
 }
 
 func (o *orm) GetUnfinishedRuns(ctx context.Context, now time.Time, fn func(run Run) error) error {
-	q := postgres.NewQWithParentCtx(ctx, o.db)
+	q := postgres.NewQ(o.db, postgres.WithParentCtx(ctx))
 	return postgres.Batch(func(offset, limit uint) (count uint, err error) {
 		var runs []Run
 
