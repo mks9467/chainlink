@@ -21,11 +21,11 @@ var (
 
 type ORM interface {
 	CreateSpec(pipeline Pipeline, maxTaskTimeout models.Interval, qs ...postgres.Q) (int32, error)
-	CreateRun(db postgres.Queryer, run *Run) (err error)
+	CreateRun(run *Run, qs ...postgres.Q) (err error)
 	DeleteRun(id int64) error
-	StoreRun(db postgres.Queryer, run *Run) (restart bool, err error)
+	StoreRun(run *Run, qs ...postgres.Q) (restart bool, err error)
 	UpdateTaskRunResult(taskID uuid.UUID, result Result) (run Run, start bool, err error)
-	InsertFinishedRun(db postgres.Queryer, run Run, saveSuccessfulTaskRuns bool) (runID int64, err error)
+	InsertFinishedRun(run Run, saveSuccessfulTaskRuns bool, qs ...postgres.Q) (runID int64, err error)
 	DeleteRunsOlderThan(context.Context, time.Duration) error
 	FindRun(id int64) (Run, error)
 	GetAllRuns() ([]Run, error)
@@ -34,7 +34,6 @@ type ORM interface {
 }
 
 type orm struct {
-	// TODO: Remove this DB entirely and pass it in with all functions
 	db *sqlx.DB
 }
 
@@ -45,22 +44,21 @@ func NewORM(db *sqlx.DB) *orm {
 }
 
 func (o *orm) CreateSpec(pipeline Pipeline, maxTaskDuration models.Interval, qs ...postgres.Q) (id int32, err error) {
-	q := postgres.GetQ(qs, o.db)
+	q := postgres.NewQFromOpts(qs, o.db)
 	sql := `INSERT INTO pipeline_specs (dot_dag_source, max_task_duration, created_at)
 	VALUES ($1, $2, NOW())
 	RETURNING id;`
-	err = q.QueryRowxContext(q.Context(), sql, pipeline.Source, maxTaskDuration).Scan(&id)
+	err = q.QueryRowx(sql, pipeline.Source, maxTaskDuration).Scan(&id)
 	return id, errors.WithStack(err)
 }
 
-func (o *orm) CreateRun(q postgres.Queryer, run *Run) (err error) {
+func (o *orm) CreateRun(run *Run, qs ...postgres.Q) (err error) {
 	if run.CreatedAt.IsZero() {
 		return errors.New("run.CreatedAt must be set")
 	}
 
-	ctx, cancel := postgres.DefaultQueryCtx()
-	defer cancel()
-	err = postgres.SqlxTransaction(ctx, q, func(tx *sqlx.Tx) error {
+	q := postgres.NewQFromOpts(qs, o.db)
+	q.Transaction(func(tx *sqlx.Tx) error {
 		sql := `INSERT INTO pipeline_runs (pipeline_spec_id, meta, inputs, created_at, state)
 		VALUES (:pipeline_spec_id, :meta, :inputs, :created_at, :state)
 		RETURNING id`
@@ -86,7 +84,7 @@ func (o *orm) CreateRun(q postgres.Queryer, run *Run) (err error) {
 		sql = `
 		INSERT INTO pipeline_task_runs (pipeline_run_id, id, type, index, output, error, dot_id, created_at)
 		VALUES (:pipeline_run_id, :id, :type, :index, :output, :error, :dot_id, :created_at);`
-		_, err = tx.NamedExecContext(ctx, sql, run.PipelineTaskRuns)
+		_, err = tx.NamedExec(sql, run.PipelineTaskRuns)
 		return err
 	})
 
@@ -95,8 +93,9 @@ func (o *orm) CreateRun(q postgres.Queryer, run *Run) (err error) {
 
 // StoreRun will persist a partially executed run before suspending, or finish a run.
 // If `restart` is true, then new task run data is available and the run should be resumed immediately.
-func (o *orm) StoreRun(q postgres.Queryer, run *Run) (restart bool, err error) {
-	err = postgres.SqlxTransactionWithDefaultCtx(q, func(tx *sqlx.Tx) error {
+func (o *orm) StoreRun(run *Run, qs ...postgres.Q) (restart bool, err error) {
+	q := postgres.NewQFromOpts(qs, o.db)
+	err = q.Transaction(func(tx *sqlx.Tx) error {
 		finished := run.FinishedAt.Valid
 		if !finished {
 			// Lock the current run. This prevents races with /v2/resume
@@ -177,12 +176,13 @@ func (o *orm) StoreRun(q postgres.Queryer, run *Run) (restart bool, err error) {
 // Used for cleaning up a run that failed and is marked failEarly (should leave no trace of the run)
 func (o *orm) DeleteRun(id int64) error {
 	// NOTE: this will cascade and wipe pipeline_task_runs too
-	_, err := o.db.Exec(`DELETE FROM pipeline_runs WHERE id = $1`, id)
+	_, err := postgres.NewQ(o.db).Exec(`DELETE FROM pipeline_runs WHERE id = $1`, id)
 	return err
 }
 
 func (o *orm) UpdateTaskRunResult(taskID uuid.UUID, result Result) (run Run, start bool, err error) {
-	err = postgres.SqlxTransaction(context.Background(), o.db, func(tx *sqlx.Tx) error {
+	q := postgres.NewQ(o.db)
+	err = q.Transaction(func(tx *sqlx.Tx) error {
 		sql := `
 		SELECT pipeline_runs.*, pipeline_specs.dot_dag_source "pipeline_spec.dot_dag_source"
 		FROM pipeline_runs
@@ -225,7 +225,7 @@ func (o *orm) UpdateTaskRunResult(taskID uuid.UUID, result Result) (run Run, sta
 // If saveSuccessfulTaskRuns = false, we only save errored runs.
 // That way if the job is run frequently (such as OCR) we avoid saving a large number of successful task runs
 // which do not provide much value.
-func (o *orm) InsertFinishedRun(db postgres.Queryer, run Run, saveSuccessfulTaskRuns bool) (runID int64, err error) {
+func (o *orm) InsertFinishedRun(run Run, saveSuccessfulTaskRuns bool, qs ...postgres.Q) (runID int64, err error) {
 	if run.CreatedAt.IsZero() {
 		return 0, errors.New("run.CreatedAt must be set")
 	}
@@ -239,9 +239,8 @@ func (o *orm) InsertFinishedRun(db postgres.Queryer, run Run, saveSuccessfulTask
 		return 0, errors.New("must provide task run results")
 	}
 
-	ctx, cancel := postgres.DefaultQueryCtx()
-	defer cancel()
-	err = postgres.SqlxTransaction(ctx, db, func(tx *sqlx.Tx) error {
+	q := postgres.NewQFromOpts(qs, o.db)
+	err = q.Transaction(func(tx *sqlx.Tx) error {
 		sql := `INSERT INTO pipeline_runs (pipeline_spec_id, meta, all_errors, fatal_errors, inputs, outputs, created_at, finished_at, state)
 		VALUES (:pipeline_spec_id, :meta, :all_errors, :fatal_errors, :inputs, :outputs, :created_at, :finished_at, :state)
 		RETURNING *;`
@@ -251,7 +250,7 @@ func (o *orm) InsertFinishedRun(db postgres.Queryer, run Run, saveSuccessfulTask
 			return e
 		}
 
-		if err = tx.GetContext(ctx, &run, query, args...); err != nil {
+		if err = tx.Get(&run, query, args...); err != nil {
 			return errors.Wrap(err, "error inserting finished pipeline_run")
 		}
 
@@ -267,16 +266,15 @@ func (o *orm) InsertFinishedRun(db postgres.Queryer, run Run, saveSuccessfulTask
 		sql = `
 		INSERT INTO pipeline_task_runs (pipeline_run_id, id, type, index, output, error, dot_id, created_at, finished_at)
 		VALUES (:pipeline_run_id, :id, :type, :index, :output, :error, :dot_id, :created_at, :finished_at);`
-		_, err = tx.NamedExecContext(ctx, sql, run.PipelineTaskRuns)
+		_, err = tx.NamedExec(sql, run.PipelineTaskRuns)
 		return err
 	})
 	return run.ID, err
 }
 
 func (o *orm) DeleteRunsOlderThan(ctx context.Context, threshold time.Duration) error {
-	_, err := o.db.ExecContext(ctx,
-		`DELETE FROM pipeline_runs WHERE finished_at < ?`, time.Now().Add(-threshold),
-	)
+	q := postgres.NewQWithParentCtx(ctx, o.db)
+	_, err := q.Exec(`DELETE FROM pipeline_runs WHERE finished_at < ?`, time.Now().Add(-threshold))
 	if err != nil {
 		return err
 	}
@@ -285,36 +283,38 @@ func (o *orm) DeleteRunsOlderThan(ctx context.Context, threshold time.Duration) 
 
 func (o *orm) FindRun(id int64) (r Run, err error) {
 	var runs []Run
-	if err = o.db.Select(&runs, `SELECT * from pipeline_runs WHERE id = $1 LIMIT 1`, id); err != nil {
-		return r, errors.Wrap(err, "failed to load runs")
-	}
+	q := postgres.NewQ(o.db)
+	err = q.Transaction(func(tx *sqlx.Tx) error {
+		if err = tx.Select(&runs, `SELECT * from pipeline_runs WHERE id = $1 LIMIT 1`, id); err != nil {
+			return errors.Wrap(err, "failed to load runs")
+		}
+		return loadAssociations(tx, runs)
+	})
 	if len(runs) == 0 {
 		return r, gorm.ErrRecordNotFound
-	}
-	if err = loadAssociations(o.db, runs); err != nil {
-		return r, err
 	}
 	return runs[0], err
 }
 
 func (o *orm) GetAllRuns() (runs []Run, err error) {
-	err = o.db.Select(&runs, `SELECT * from pipeline_runs ORDER BY created_at ASC, id ASC`)
-	if err != nil {
-		return nil, errors.Wrap(err, "failed to load runs")
-	}
+	q := postgres.NewQ(o.db)
+	err = q.Transaction(func(tx *sqlx.Tx) error {
+		err = tx.Select(&runs, `SELECT * from pipeline_runs ORDER BY created_at ASC, id ASC`)
+		if err != nil {
+			return errors.Wrap(err, "failed to load runs")
+		}
 
-	err = loadAssociations(o.db, runs)
-	if err != nil {
-		return nil, err
-	}
+		return loadAssociations(tx, runs)
+	})
 	return runs, err
 }
 
 func (o *orm) GetUnfinishedRuns(ctx context.Context, now time.Time, fn func(run Run) error) error {
+	q := postgres.NewQWithParentCtx(ctx, o.db)
 	return postgres.Batch(func(offset, limit uint) (count uint, err error) {
 		var runs []Run
 
-		err = postgres.SqlxTransaction(ctx, o.db, func(tx *sqlx.Tx) error {
+		err = q.Transaction(func(tx *sqlx.Tx) error {
 			err = tx.Select(&runs, `SELECT * from pipeline_runs WHERE state = $1 AND created_at < $2 ORDER BY created_at ASC, id ASC OFFSET $1 LIMIT $2`, RunStatusRunning, now, offset, limit)
 			if err != nil {
 				return errors.Wrap(err, "failed to load runs")
